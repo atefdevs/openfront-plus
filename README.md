@@ -1,117 +1,158 @@
 # Openfront+
 
-A clean, separate Manifest V3 browser extension (Chrome, Edge, and Firefox) for
-`https://openfront.io/*`.
+A clean, separate **Manifest V3** browser extension for Google Chrome that adds
+quality-of-life overlays and readouts to the browser game
+[OpenFront.io](https://openfront.io).
 
-It contains only:
+Everything runs locally: the extension only reads what the game page already
+exposes and draws on top of it. No accounts, no network calls, no data leaves
+your browser, and it provides **no advantages or cheats** — it just makes
+information the game already has easier to see.
 
-1. **SAM Coverage** — while Atom Bomb mode is selected, waits 1.5 seconds after
-   the cursor stops, then estimates the atom bombs and gold needed for the
-   hovered tile. Only active enemy SAMs are counted.
-2. **Nuke Grouper** — groups only active/in-flight **Atom Bombs** whose target
-   tiles fall within roughly three Atom Bomb blast radii. Each label keeps one
-   stable anchor while any atom bomb remains in that group, so it does not jump
-   to the next nuke as older nukes disappear. Hydrogen Bombs and MIRV warheads
-   are ignored. Counts disappear as soon as the group has no active atom bombs.
-3. **Mark teammates with team color** — temporarily marks other human teammates
-   during spawn selection, using the OpenFront theme color when available.
-4. **Incoming Nuke Alert** — a HUD panel listing every nuke heading for your
-   territory (atom, hydrogen, MIRV carrier, and MIRV warheads), with count and
-   seconds until impact. MIRV carriers can't be intercepted, but the warheads
-   they release are real nukes and can be shot down by SAMs in range. The panel
-   reports how many intercepts your SAMs (including allies'/teammates') can fire
-   before impact and whether that's enough.
-5. **Show Nukes in Airspace** — a UI panel showing all nukes currently in the
-   airspace, including MIRV warheads, plus an optional personal row listing
-   only your own nukes.
-6. **Gold Income Display** — draggable panel showing your income per second
-   and/or per minute. The total is measured from your own gold deltas, then
-   split into base / ports / factories: the passive base
-   (`Config.goldAdditionRate` = 100/tick human, 50/tick bot, × `goldMultiplier`)
-   is read from the game's config, and port income (trade-ship arrivals) vs
-   factory income (City/Port train stops) is detected client-side and valued
-   with the exact `Config.tradeShipGold` / `Config.trainGold` formulas, averaged
-   over a 60 s rolling window. The split is reconciled to the sampled total, so
-   a tracking miss never changes the number. Conquest loot from killing players
-   is never counted.
-7. **Troop Rate Display** — draggable panel showing natural troop growth. It
-   evaluates the game's own `Config.troopIncreaseRate(player)`, which applies
-   the per-tick formula `(10 + troops^0.73 / 4) × (1 − troops / maxTroops)`.
-   The population cap comes from `Config.maxTroops` — building and upgrading
-   cities raises the cap and therefore the growth rate. It reports natural
-   growth only: attacking other players is never counted.
-8. **Enemy Nuke Readiness** — adds a row to the game's own player-info
-   overlay (the panel shown when you hover a player) telling you how many of
-   that player's nukes are ready, based on their missile silos. A silo's ready
-   count is its capacity (level) minus the missiles still in cooldown
-   (`missileTimerQueue`), the same model the game uses for SAM launcher shots.
-   It also shows how many of each nuke type they could actually launch right
-   now with their current gold (☢ atoms, 💣 hydrogen, 🚀 MIRV) — using the
-   game's own build-menu costs, so the MIRV price reflects the escalating
-   per-launch cost. Enemies with loaded silos but not enough gold are
-   highlighted in amber.
+There are ten toggles in the popup, grouped into feature cards. Cards marked
+with an arrow are collapsible and hold sub-toggles.
 
-No auto-join, boat macro, economy counters, alliance panel, bot markers,
-heatmaps, or other helper features are included.
+## Features
+
+### 1. SAM Coverage
+
+While the **Atom Bomb** tool is selected (`ghostStructure === "Atom Bomb"`,
+normally set by pressing `8`), rests your cursor over a tile for 1.5 seconds and
+then shows:
+
+- how many atoms you need (1 + combined levels of every active enemy SAM
+  covering that tile),
+- the estimated "potential" atom count those SAM owners could reach with their
+  visible gold,
+- the total gold cost to clear the tile.
+
+Only *active* enemy SAMs are counted, and only while the Atom Bomb tool is
+active — outside that state the estimate never triggers.
+
+### 2. Nuke Grouper
+
+Clusters in-flight **Atom** and **Hydrogen** bombs whose target tiles fall
+within roughly three blast radii of each other into one stable counter, labeled
+by relation — `Your`, `Ally`, or `Enemy` — with atom (☢) and hydrogen (💣)
+counts shown separately. Each label keeps one anchor point for as long as the
+group has any active nuke, so it doesn't hop to the next nuke as older ones
+disappear. MIRV warheads are ignored.
+
+### 3. Better Spawn Selection
+
+During spawn selection, marks other **human teammates** with your team's actual
+color (the OpenFront theme color when available, otherwise a stable fallback),
+so you can see at a glance who you're dropping in with. Marks disappear
+automatically when spawn selection ends.
+
+### 4. Incoming Nuke Alert
+
+A HUD panel listing every nuke heading for **your** territory:
+
+- type and count (☢ atom, 💣 hydrogen, 🚀 MIRV carrier, 💥 MIRV warheads),
+- seconds until impact,
+- whether your SAMs — including allies' and teammates' — can intercept them in
+  time, with the number of intercepts available.
+
+The panel updates live as nukes are intercepted or land. MIRV **carriers** can't
+be intercepted, but the **warheads** they release are real nukes targeting your
+tiles and *can* be shot down by SAMs in range.
+
+### 5. Show Nukes in Airspace (+ Show Your Nukes)
+
+A panel showing all nukes currently in the airspace: total in-flight atoms,
+hydrogen bombs, MIRV carriers, and (when present) MIRV warheads.
+
+The **Show Your Nukes** sub-toggle adds a personal row counting only the nukes
+you launched. It depends on the airspace panel being enabled.
+
+### 6. Enemy Nuke Readiness
+
+Adds a row to the game's own player-info overlay — the panel shown when you
+hover a player — telling you how many nukes that player has **ready right now**:
+
+- a silo's ready count is its capacity (level) minus the missiles still
+  reloading (`missileTimerQueue`), the same model the game uses for SAM
+  launcher shots,
+- how many of each type they could actually launch with their current gold
+  (☢ atoms, 💣 hydrogen, 🚀 MIRV), priced with the game's own build-menu costs
+  so the MIRV figure reflects the escalating per-launch cost,
+- enemies with loaded silos but not enough gold are highlighted in amber.
+
+### 7. Trade Partner
+
+Rows on the player-info overlay (hover a player) covering how much you earn from
+trading with them and how your navy has been doing against theirs. Each row
+splits events into **"theirs"** (your navy vs them) and **"mine"** (their navy
+vs you). Sub-toggles:
+
+- **Trade Income** — the gold you receive from trading with that player: their
+  ships arriving at your ports, your ships arriving at theirs, and trade ships
+  your warships captured from them (the game pays the capturer on arrival).
+  Shows as `Trade: +X/s · N ships`, or `Trade: stopped` when trading is off.
+- **Trade Ship Captures** — ⚔ trade ships captured by warships.
+- **Transport Ships Down** — 🚤 transport ships destroyed by warships.
+- **Warships Down** — 💥 warships destroyed.
+
+The naval counters are best-effort client-side heuristics (an owner change
+counts as a capture; a ship disappearing next to an enemy warship counts as a
+kill) and reset each game.
+
+### 8. Gold Income Display
+
+A draggable panel showing your gold income **per second** and/or **per minute**
+(position is remembered). The total is *measured* from your own gold deltas —
+the authoritative number — then apportioned into:
+
+- **base** — the passive rate, `Config.goldAdditionRate` (100/tick human,
+  50/tick bot) × the lobby `goldMultiplier`,
+- **ports** — trade-ship arrivals, valued with the exact `Config.tradeShipGold`
+  formula from the route length,
+- **warships** — captured trade ships (the game pays the capturer on arrival),
+- **factories** — train station stops, valued with the exact
+  `Config.trainGold` formula.
+
+Values are averaged over a 60-second rolling window. The split is reconciled to
+the measured total, so a tracking miss degrades the split but never the number.
+Conquest loot from killing players is never counted, and spending is ignored.
+
+### 9. Troop Rate Display
+
+A draggable panel showing your natural troop growth **per second** and/or **per
+minute** (position is remembered). It evaluates the game's own
+`Config.troopIncreaseRate(player)`:
+
+`(10 + troops^0.73 / 4) × (1 − troops / maxTroops)`
+
+The population cap comes from `Config.maxTroops` — building and upgrading
+cities raises the cap and therefore the growth rate. It reports **natural
+growth only**: attacking other players is never counted.
+
+## What it doesn't do
+
+No auto-join, boat macros, economy counters, alliance panels, bot markers,
+heatmaps, or any feature that plays the game for you. Everything here only
+*surfaces* information the game already knows.
 
 ## Install
 
-### Chrome / Edge
 
-1. Extract the ZIP.
-2. Open `chrome://extensions` in Chrome or Edge.
-3. Turn on **Developer mode**.
+### Chrome
+
+1. Extract the extension folder (or ZIP) somewhere on disk.
+2. Open `chrome://extensions`.
+3. Turn on **Developer mode** (toggle in the top-right corner).
 4. Click **Load unpacked**.
-5. Select the extracted `nuke-ui-label` folder.
-6. Open the extension popup and enable the features you want.
-7. Reload an already-open OpenFront tab once after installing.
+5. Select the `openfront-plus` folder.
+6. Open an OpenFront tab — click the **Openfront+** icon in the toolbar to open
+   the popup and enable the features you want.
+7. If an OpenFront tab was already open before installing, reload it once.
 
-### Firefox
+### Other browsers
 
-1. Extract the ZIP.
-2. Open `about:debugging#/runtime/this-firefox`.
-3. Click **Load Temporary Add-on…**.
-4. Select the `manifest.json` file inside the extracted folder.
-5. Open the extension popup and enable the features you want.
-6. Reload an already-open OpenFront tab once after installing.
-
-> Temporary add-ons load only until Firefox restarts. To install permanently,
-> package the folder as a `.zip` and sign it via
-> [addons.mozilla.org](https://addons.mozilla.org/developers/) (the
-> `browser_specific_settings.gecko.id` in `manifest.json` is already set for
-> submission).
-
-SAM Coverage activates only while OpenFront reports
-`ghostStructure === "Atom Bomb"`. Pressing `8` or clicking the Atom Bomb tool
-normally sets that exact game state. Outside that state, mouse movement and
-cursor pauses do not trigger the estimate.
-
-## SAM estimate
-
-The current requirement is estimated as:
-
-`1 atom + the combined levels of all active enemy SAMs covering the tile`
-
-Potential is counted once per covering SAM owner:
-
-- 3m visible gold: `+1`
-- 6m visible gold: `+2`
-- 9m or more visible gold: `+3`
-
-The cost display uses 750k gold per Atom Bomb. If OpenFront's internal objects
-cannot be read safely, the label shows `tracking` or stays hidden.
+working to getting this extension to every extension webstore out there, if the broswer supports temporary addons or unpacked extensions then follow the same instructions as chrome (differs depending on your broswer)
 
 ## Notes
 
-- Settings are stored only in `browser.storage.local` (works in Chrome, Edge,
-  and Firefox via the `browser`/`chrome` namespace shim).
-- OpenFront's game objects are minified and can change. The bridge uses several
-  known component hooks plus defensive fallbacks so a missing hook will not
-  crash the page.
-- Gold/troop numbers come from reading OpenFront's own config objects when they
-  are available (`Config.goldAdditionRate`, `Config.tradeShipGold`,
-  `Config.trainGold`, `Config.troopIncreaseRate`, `Config.maxTroops`); the
-  sampling fallbacks only kick in when the config or the unit API can't be
-  reached.
-- This extension is unofficial and is not affiliated with or endorsed by
+- This extension is **unofficial** and is not affiliated with or endorsed by
   OpenFront.
