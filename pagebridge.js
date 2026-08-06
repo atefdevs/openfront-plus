@@ -347,7 +347,26 @@
     return getObjectId(p);
   }
   function getPlayerTeam(p) {
-    return String(callMethod(p, "team") ?? readProperty(readProperty(p, "data"), "team") ?? "") || null;
+    // The team may live on the player, a nested data object, or be a method.
+    // During spawn phases, however, the field can also be a number or a
+    // different name, so try the common variants before falling back.
+    const sources = [
+      callMethod(p, "team"),
+      readProperty(p, "team"),
+      callMethod(readProperty(p, "data"), "team"),
+      readProperty(readProperty(p, "data"), "team"),
+      callMethod(p, "teamId"),
+      readProperty(p, "teamId"),
+      callMethod(p, "playerTeamId"),
+      readProperty(p, "playerTeamId"),
+      readProperty(p, "unitTeam"),
+      readProperty(p, "affiliation"),
+    ];
+    for (const raw of sources) {
+      if (typeof raw === "number") return String(raw);
+      if (typeof raw === "string" && raw.trim() && raw !== "null" && raw !== "undefined") return raw;
+    }
+    return null;
   }
   function isSamePlayer(a, b) { if (!a || !b) return false; if (a === b) return true; return getPlayerId(a) === getPlayerId(b); }
   function isOnSameTeam(a, b) {
@@ -982,8 +1001,11 @@
   }
 
   // === Teammate markers (spawn phase) ===
+  let teammateAnimationFrame = null;
   let teammateScanCache = [];
   let lastTeammateScanAt = 0;
+
+  let teammateDiagLogged = false;
   let teammateColor = "#22c55e";
   const teammateEntries = new Map();
 
@@ -1023,21 +1045,73 @@
     return s.display !== "none" && s.visibility !== "hidden" && s.opacity !== "0";
   }
 
+  // The game has renamed its spawn-phase internals across versions, so look for
+  // booleans, spawn-y state strings, keys whose name mentions "spawn", and
+  // finally spawn-named DOM elements. Each layer only matches real game state,
+  // so false positives stay low.
   function isSpawnPhase(game) {
     const fd = callMethod(game, "frameData") ?? readProperty(game, "frameData");
-    let fv = readProperty(fd, "inSpawnPhase");
-    if (typeof fv === "function") fv = callMethod(fd, "inSpawnPhase");
-    if (typeof fv === "boolean") return fv;
-    for (const k of ["inSpawnPhase", "isInSpawnPhase", "isSpawnPhase"]) {
-      const raw = readProperty(game, k);
-      const val = typeof raw === "function" ? callMethod(game, k) : raw;
-      if (typeof val === "boolean") return val;
+    const flagKeys = ["inSpawnPhase", "isInSpawnPhase", "isSpawnPhase", "spawnPhase", "spawnActive", "isSpawning"];
+    const stateKeys = ["phase", "currentPhase", "gamePhase", "phaseState", "phaseName", "state", "currentState", "gameState", "status", "mode"];
+
+    const readFlag = (obj) => {
+      if (!obj || typeof obj !== "object") return null;
+      for (const k of flagKeys) {
+        let v = readProperty(obj, k);
+        if (typeof v === "function") v = callMethod(obj, k);
+        if (typeof v === "boolean") return v;
+      }
+      return null;
+    };
+    const readState = (obj) => {
+      if (!obj || typeof obj !== "object") return null;
+      for (const k of stateKeys) {
+        let v = readProperty(obj, k);
+        if (typeof v === "function") v = callMethod(obj, k);
+        if (typeof v === "string" && v.trim() && /spawn/i.test(v)) return true;
+      }
+      return null;
+    };
+    const scanKeys = (obj) => {
+      if (!obj || typeof obj !== "object") return null;
+      try {
+        for (const k of Object.keys(obj)) {
+          if (!k.toLowerCase().includes("spawn")) continue;
+          let v = readProperty(obj, k);
+          if (typeof v === "function") v = callMethod(obj, k);
+          if (typeof v === "boolean") return v;
+          if (typeof v === "string" && v.trim() && /spawn/i.test(v)) return true;
+        }
+      } catch (_) {}
+      return null;
+    };
+
+    for (const obj of [fd, game, readProperty(game, "data")]) {
+      const f = readFlag(obj);
+      if (f !== null) return f;
+      const s = readState(obj);
+      if (s !== null) return s;
+      const sc = scanKeys(obj);
+      if (sc !== null) return sc;
     }
-    const spawnEl = document.querySelector(
+
+    // DOM: known spawn elements, then any visible element whose tag name
+    // contains "spawn" (custom elements the game renders).
+    const known = document.querySelector(
       'spawn-timer, spawn-overlay, spawn-selection, spawn-panel, spawn-view, spawn-screen, ' +
+      'spawn-selection-menu, spawn-location, spawn-picker, spawn-hud, spawn-status, ' +
+      'spawn-countdown, spawn-choice, spawn-menu, ' +
       '[data-game-phase="spawn"], [data-phase="spawn"], [data-phase="spawning"]'
     );
-    return isElementVisible(spawnEl);
+    if (isElementVisible(known)) return true;
+    try {
+      const all = document.querySelectorAll("*");
+      for (const n of all) {
+        if (typeof n.tagName !== "string" || !n.tagName.toLowerCase().includes("spawn")) continue;
+        if (isElementVisible(n)) return true;
+      }
+    } catch (_) {}
+    return false;
   }
 
   function isGameActive(game) {
@@ -1051,8 +1125,19 @@
 
   function getNameLocation(player) {
     const loc = callMethod(player, "nameLocation") ?? readProperty(readProperty(player, "data"), "nameLocation");
-    const x = toFiniteNumber(readProperty(loc, "x")), y = toFiniteNumber(readProperty(loc, "y"));
-    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+    if (loc && typeof loc === "object") {
+      const x = toFiniteNumber(readProperty(loc, "x")), y = toFiniteNumber(readProperty(loc, "y"));
+      if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+    }
+    // Fall back to position fields the game may expose directly on the player.
+    for (const key of ["position", "location", "worldPos", "pos", "spawnPos", "tilePos", "namePending"]) {
+      const v = callMethod(player, key) ?? readProperty(player, key);
+      if (v && typeof v === "object") {
+        const x = toFiniteNumber(readProperty(v, "x")), y = toFiniteNumber(readProperty(v, "y"));
+        if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+      }
+    }
+    return null;
   }
 
   function hashString(value) {
@@ -1115,14 +1200,41 @@
   function syncTeammateMarkers() {
     if (!settings.teammateMarkers) {
       clearTeammateEntries();
+      teammateAnimationFrame = null;
       return;
     }
+
     const ctx = getGameContext();
-    const _tmTicks = ctx?.game ? toFiniteNumber(callMethod(ctx.game, "ticks"), 0) : 0;
-    if (!ctx?.game || !ctx?.transform || !isSpawnPhase(ctx.game) || _tmTicks <= 0) {
-      clearTeammateEntries();
+    if (!ctx?.game || !ctx?.transform) {
+      teammateAnimationFrame = requestAnimationFrame(syncTeammateMarkers);
       return;
     }
+
+    if (!teammateDiagLogged) {
+      teammateDiagLogged = true;
+      let keys = "unreadable";
+      let ticks = "?";
+      try {
+        const fd = typeof ctx.game.frameData === "function" ? ctx.game.frameData() : ctx.game.frameData;
+        keys = fd && typeof fd === "object" ? Object.keys(fd).join(", ") : "none";
+      } catch (_) {}
+      try { ticks = typeof ctx.game.ticks === "function" ? String(ctx.game.ticks()) : "n/a"; } catch (_) {}
+      console.log(
+        "[Openfront+ Spawn] = isSpawnPhase:", isSpawnPhase(ctx.game),
+        "isGameActive:", isGameActive(ctx.game),
+        "ticks:", ticks, "| frameData keys:", keys,
+      );
+    }
+
+    // Show markers whenever the game object exists but is not actively playing
+    // (that is the spawn / pre-match window). This does not depend on a fragile
+    // spawn-phase flag, so it survives game-version renames.
+    if (isGameActive(ctx.game)) {
+      clearTeammateEntries();
+      teammateAnimationFrame = requestAnimationFrame(syncTeammateMarkers);
+      return;
+    }
+
     const now = performance.now();
     if (now - lastTeammateScanAt >= TEAMMATE_SCAN_MS) {
       teammateScanCache = collectTeammates(ctx.game);
@@ -1143,15 +1255,24 @@
       if (entry.x !== screen.x) { entry.marker.style.setProperty("--team-x", `${screen.x}px`); entry.x = screen.x; }
       if (entry.y !== screen.y) { entry.marker.style.setProperty("--team-y", `${screen.y}px`); entry.y = screen.y; }
     }
+
+    teammateAnimationFrame = requestAnimationFrame(syncTeammateMarkers);
   }
 
   function setTeammateMarkersEnabled(on) {
     settings.teammateMarkers = !!on;
     if (!on) {
+      if (teammateAnimationFrame !== null) {
+        cancelAnimationFrame(teammateAnimationFrame);
+        teammateAnimationFrame = null;
+      }
       clearTeammateEntries();
       document.getElementById(TEAMMATE_STYLE_ID)?.remove();
+      return;
     }
-    ensureMasterLoop();
+    if (teammateAnimationFrame === null) {
+      syncTeammateMarkers();
+    }
   }
 
   // === Incoming nuke alert ===
@@ -2681,10 +2802,21 @@
   let goldDragOffsetX = 0;
   let goldDragOffsetY = 0;
 
+  // Keep a saved panel on-screen. A drag only ever stores in-viewport coords,
+  // but window/monitor size changes can still strand the panel off the visible
+  // area where it's impossible to see or grab again — so clamp on load too.
+  function clampPanelPos(x, y) {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    return {
+      x: Math.max(4, Math.min(Math.round(x), Math.max(4, vw - 170))),
+      y: Math.max(4, Math.min(Math.round(y), Math.max(4, vh - 70))),
+    };
+  }
+
   function loadGoldPanelPos() {
     try {
       const p = JSON.parse(localStorage.getItem(GOLD_POS_KEY) || "null");
-      if (p && typeof p.x === "number" && typeof p.y === "number") return p;
+      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) return clampPanelPos(p.x, p.y);
     } catch (_) {}
     return { x: 16, y: 100 }; // default: top-left area
   }
@@ -3373,9 +3505,10 @@
     }
     try {
       const pos = JSON.parse(localStorage.getItem(TROOP_POS_KEY) || "null");
-      if (pos && typeof pos.x === "number") {
-        troopPanel.style.left = pos.x + "px";
-        troopPanel.style.top  = pos.y + "px";
+      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+        const c = clampPanelPos(pos.x, pos.y);
+        troopPanel.style.left = c.x + "px";
+        troopPanel.style.top  = c.y + "px";
       } else {
         troopPanel.style.left = "16px";
         troopPanel.style.top  = "160px"; // default below gold panel
@@ -3600,6 +3733,9 @@
         teardownAllInGameFeatures();
         masterWasInGame = false;
       }
+      // Teammate markers run in their own requestAnimationFrame loop (they are
+      // a spawn-phase feature and isGameActive() is false during spawn), so the
+      // master loop doesn't drive them.
       masterLoopFrame = requestAnimationFrame(runMasterLoop);
       return;
     }
@@ -3616,7 +3752,6 @@
       syncSamMode();
     }
     if (settings.nukeGrouper) syncNukeGrouper();
-    if (settings.teammateMarkers) syncTeammateMarkers();
     if (settings.incomingNukeAlert) syncIncomingNukeAlert();
     if (settings.globalNukeActivity) syncGlobalNukeActivity();
     if (settings.enemyNukeReadiness) syncEnemyNukes();
