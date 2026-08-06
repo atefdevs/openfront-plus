@@ -82,40 +82,43 @@
           </span>
         </label>
 
-        <!-- Show Nukes in Airspace -->
-        <label class="toggle-card">
-          <span class="copy">
-            <span class="title-row">
-              <strong>Show Nukes in Airspace</strong>
-              <span class="badge badge--blue">☢ Atom Bombs</span>
-              <span class="badge badge--orange">💣 Hydro Bombs</span>
-              <span class="badge badge--purple">🚀 MIRV</span>
+        <!-- Show Nukes in Airspace (collapsible, Show Your Nukes is a sub-toggle) -->
+        <div class="toggle-card toggle-card--collapsible" id="airspaceCard">
+          <div class="toggle-card-header" id="airspaceHeader">
+            <span class="copy">
+              <span class="title-row">
+                <strong>Show Nukes in Airspace</strong>
+                <span class="badge badge--blue">☢ Atom Bombs</span>
+                <span class="badge badge--orange">💣 Hydro Bombs</span>
+                <span class="badge badge--purple">🚀 MIRV</span>
+              </span>
+              <small>Adds a UI panel that shows all nukes currently in the airspace (global counts).</small>
             </span>
-            <small>Adds a UI panel that shows all nukes currently in the airspace (global counts).</small>
-          </span>
-          <span class="switch">
-            <input id="globalNukeActivity" type="checkbox" />
-            <span class="track" aria-hidden="true"></span>
-          </span>
-        </label>
-
-        <!-- Show Your Nukes (depends on global) -->
-        <label class="toggle-card" id="personalNukeTrackerCard">
-          <span class="copy">
-            <span class="title-row">
-              <strong>Show Your Nukes</strong>
-              <span class="badge badge--blue">☢ Atom Bombs</span>
-              <span class="badge badge--orange">💣 Hydrogen Bombs</span>
-              <span class="badge badge--purple">🚀 MIRV</span>
+            <span class="switch">
+              <input id="globalNukeActivity" type="checkbox" />
+              <span class="track" aria-hidden="true"></span>
             </span>
-            <small>When the airspace panel is enabled, also shows how many of those nukes are yours.</small>
-          </span>
-          <span class="switch">
-            <input id="personalNukeTracker" type="checkbox" />
-            <span class="track" aria-hidden="true"></span>
-          </span>
-          <span class="lock-icon" id="lockIcon" aria-hidden="true">🔒</span>
-        </label>
+            <span class="collapse-arrow" id="airspaceArrow">▶</span>
+          </div>
+          <div class="sub-toggles" id="airspaceSubs">
+            <label class="toggle-card toggle-card--sub" id="personalNukeTrackerCard">
+              <span class="copy">
+                <span class="title-row">
+                  <strong>Show Your Nukes</strong>
+                  <span class="badge badge--blue">☢ Atom Bombs</span>
+                  <span class="badge badge--orange">💣 Hydrogen Bombs</span>
+                  <span class="badge badge--purple">🚀 MIRV</span>
+                </span>
+                <small>Also shows how many of those nukes are yours.</small>
+              </span>
+              <span class="switch">
+                <input id="personalNukeTracker" type="checkbox" />
+                <span class="track" aria-hidden="true"></span>
+              </span>
+              <span class="lock-icon" id="lockIcon" aria-hidden="true">🔒</span>
+            </label>
+          </div>
+        </div>
 
         <!-- Enemy Nuke Readiness -->
         <label class="toggle-card">

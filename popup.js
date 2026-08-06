@@ -69,7 +69,7 @@
   /* toggle dependency handling */
 
   function updateDependencies() {
-    updatePersonalToggleState();
+    updateAirspaceState();
     updateTradePartnerState();
     updateGoldIncomeState();
     updateTroopRateState();
@@ -85,7 +85,7 @@
       (document.getElementById("tradeWarships")?.checked || false);
   }
 
-  function updatePersonalToggleState() {
+  function updateAirspaceState() {
     const globalInput = document.getElementById("globalNukeActivity");
     const personalInput = document.getElementById("personalNukeTracker");
     const lockIcon = document.getElementById("lockIcon");
@@ -99,6 +99,19 @@
       personalInput.disabled = false;
       if (lockIcon) lockIcon.style.display = "none";
     }
+  }
+
+  function toggleAirspaceSubs() {
+    const subs = document.getElementById("airspaceSubs");
+    const arrow = document.getElementById("airspaceArrow");
+    if (!subs || !arrow) return;
+    subs.classList.toggle("open");
+    arrow.classList.toggle("open");
+  }
+
+  function airspaceMainClicked() {
+    saveSettings();
+    updateAirspaceState();
   }
 
   function updateGoldIncomeState() {
@@ -304,6 +317,15 @@
         e.preventDefault();
         showDisabledMessage();
       }
+    });
+  }
+
+  // Airspace collapse/expand
+  const airspaceHeader = document.getElementById("airspaceHeader");
+  if (airspaceHeader) {
+    airspaceHeader.addEventListener("click", (e) => {
+      if (e.target.tagName === "INPUT") return;
+      toggleAirspaceSubs();
     });
   }
 
