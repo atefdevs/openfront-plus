@@ -1,0 +1,10 @@
+Portions of the OpenFront game-context discovery, SAM estimate, nuke overlay,
+and teammate marker patterns were adapted from:
+
+OpenFront Helper v2.7.2
+Copyright: phil0010-gh and contributors
+Source: https://github.com/phil0010-gh/openfront-helper
+License: Creative Commons Attribution-NonCommercial 4.0 International
+
+This is a separate, modified, non-commercial extension containing only the
+features described in README.md.

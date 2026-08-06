@@ -1,0 +1,300 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 370px;
+  margin: 0;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(250, 204, 21, 0.12), transparent 38%),
+    #071019;
+  color: #f8fafc;
+}
+
+.panel {
+  padding: 16px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 14px;
+}
+
+.header strong,
+.header small,
+.copy small {
+  display: block;
+}
+
+.header strong {
+  font-size: 15px;
+  letter-spacing: 0.01em;
+}
+
+.header small {
+  margin-top: 2px;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid rgba(250, 204, 21, 0.42);
+  border-radius: 10px;
+  background: rgba(250, 204, 21, 0.1);
+  color: #facc15;
+  font-size: 23px;
+  box-shadow: 0 0 18px rgba(250, 204, 21, 0.12);
+}
+
+.toggles {
+  display: grid;
+  gap: 9px;
+}
+
+.toggle-card {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid #223041;
+  border-radius: 11px;
+  background: rgba(15, 23, 42, 0.86);
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+  position: relative;   /* for lock icon */
+}
+
+.toggle-card:hover {
+  border-color: #3b4f68;
+  background: rgba(19, 31, 51, 0.94);
+}
+
+.toggle-card:has(input:checked) {
+  border-color: rgba(250, 204, 21, 0.56);
+  background: rgba(50, 43, 15, 0.3);
+}
+
+.copy {
+  min-width: 0;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+
+.title-row strong {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.copy strong {
+  margin-bottom: 4px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.copy small {
+  color: #94a3b8;
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.badge--blue {
+  background: rgba(96, 165, 250, 0.15);
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  color: #93c5fd;
+}
+
+.badge--yellow {
+  background: rgba(250, 204, 21, 0.12);
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  color: #fde047;
+}
+
+.badge--orange {
+  background: rgba(251, 146, 60, 0.14);
+  border: 1px solid rgba(251, 146, 60, 0.38);
+  color: #fdba74;
+}
+
+.badge--green {
+  background: rgba(74, 222, 128, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.32);
+  color: #86efac;
+}
+
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 22px;
+}
+
+.switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.track {
+  position: absolute;
+  inset: 0;
+  border: 1px solid #475569;
+  border-radius: 999px;
+  background: #1e293b;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
+}
+
+.track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  transition:
+    transform 140ms ease,
+    background 140ms ease;
+}
+
+.switch input:checked + .track {
+  border-color: #facc15;
+  background: #713f12;
+}
+
+.switch input:checked + .track::after {
+  background: #fef08a;
+  transform: translateX(16px);
+}
+
+.switch input:focus-visible + .track {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+
+.status {
+  min-height: 15px;
+  margin: 12px 2px 0;
+  color: #64748b;
+  font-size: 10px;
+  text-align: center;
+}
+
+.status.saved {
+  color: #86efac;
+}
+
+.status.error {
+  color: #fca5a5;
+}
+
+.badge--red {
+  background: rgba(248, 113, 113, 0.14);
+  border: 1px solid rgba(248, 113, 113, 0.38);
+  color: #fca5a5;
+}
+
+.badge--purple {
+  background: rgba(167, 139, 250, 0.13);
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  color: #c4b5fd;
+}
+
+/* Lock icon for disabled "Show Your Nukes" toggle */
+.lock-icon {
+  position: absolute;
+  right: 48px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  opacity: 0.65;
+  pointer-events: none;
+  display: none;
+}
+
+/* --- Gold Income collapsible card --- */
+.toggle-card--collapsible {
+  flex-wrap: wrap;
+}
+
+.toggle-card-header {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  cursor: pointer;
+}
+
+.collapse-arrow {
+  margin-left: auto;
+  margin-right: 4px;
+  font-size: 12px;
+  color: #94a3b8;
+  transition: transform 0.2s;
+}
+
+.collapse-arrow.open {
+  transform: rotate(90deg);
+}
+
+.sub-toggles {
+  display: none;
+  width: 100%;
+  margin-top: 8px;
+  padding-left: 20px;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sub-toggles.open {
+  display: flex;
+}
+
+/* Sub-toggle cards are slightly smaller */
+.toggle-card--sub {
+  min-height: 50px;
+  padding: 8px 12px;
+  background: rgba(15, 23, 42, 0.65);
+  border-color: #1e2d3d;
+}
+
+.toggle-card--sub .copy strong {
+  font-size: 11px;
+}

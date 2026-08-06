@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "Openfront+",
+  "version": "2.0",
+  "description": "Shows Atom Bomb SAM costs, stable grouped in-flight nuke labels, and temporary team-colored spawn markers in OpenFront.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "openfront-plus@openfront.io",
+      "strict_min_version": "115.0"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://openfront.io/*"
+  ],
+  "action": {
+    "default_title": "Openfront+",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://openfront.io/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "pagebridge.js"
+      ],
+      "matches": [
+        "https://openfront.io/*"
+      ]
+    }
+  ]
+}
