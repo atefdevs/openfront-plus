@@ -1840,7 +1840,11 @@
   function addNotification(panel, type, message) {
     const el = document.createElement("div");
     el.className = `of-nuke-tools-alert-result of-nuke-tools-alert-result--${type}`;
-    el.innerHTML = `<span style="font-weight:900;font-size:14px;">${message}</span>`;
+    const span = document.createElement("span");
+    span.style.fontWeight = "900";
+    span.style.fontSize = "14px";
+    span.textContent = message;
+    el.appendChild(span);
     panel.appendChild(el);
     setTimeout(() => {
       if (el.parentNode) el.remove();
@@ -2073,52 +2077,51 @@
     const globalCounts = getGlobalNukeCounts(game);
     const totalGlobal = globalCounts.atom + globalCounts.hydrogen + globalCounts.mirv + globalCounts.warhead;
 
-    let html = "";
+    panel.replaceChildren();
 
     if (totalGlobal === 0) {
-      html = `<div class="activity-empty">No nukes in airspace</div>`;
+      const empty = document.createElement("div");
+      empty.className = "activity-empty";
+      empty.textContent = "No nukes in airspace";
+      panel.appendChild(empty);
     } else {
-      html = `
-        <div class="activity-row">
-          <span>☢ Atom</span>
-          <span class="activity-count">${globalCounts.atom}</span>
-        </div>
-        <div class="activity-row">
-          <span>💣 Hydro</span>
-          <span class="activity-count">${globalCounts.hydrogen}</span>
-        </div>
-        <div class="activity-row">
-          <span>🚀 MIRV</span>
-          <span class="activity-count">${globalCounts.mirv}</span>
-        </div>
-      `;
+      const rows = [
+        ["☢ Atom", globalCounts.atom],
+        ["💣 Hydro", globalCounts.hydrogen],
+        ["🚀 MIRV", globalCounts.mirv],
+      ];
       if (globalCounts.warhead > 0) {
-        html += `
-          <div class="activity-row">
-            <span>💥 Warheads</span>
-            <span class="activity-count">${globalCounts.warhead}</span>
-          </div>
-        `;
+        rows.push(["💥 Warheads", globalCounts.warhead]);
+      }
+      for (const [label, count] of rows) {
+        const row = document.createElement("div");
+        row.className = "activity-row";
+        const labelSpan = document.createElement("span");
+        labelSpan.textContent = label;
+        const countSpan = document.createElement("span");
+        countSpan.className = "activity-count";
+        countSpan.textContent = String(count);
+        row.append(labelSpan, countSpan);
+        panel.appendChild(row);
       }
     }
 
     if (settings.personalNukeTracker) {
       const personalCounts = getPersonalNukeCounts(game);
-      const totalPersonal = personalCounts.atom + personalCounts.hydrogen + personalCounts.mirv + personalCounts.warhead;
+      const personalRow = document.createElement("div");
+      personalRow.className = "personal-row";
       if (totalGlobal === 0) {
-        html += `<div class="personal-row">Your nukes: 0</div>`;
+        personalRow.textContent = "Your nukes: 0";
       } else {
         const parts = [];
         if (personalCounts.atom > 0) parts.push(`☢ ${personalCounts.atom}`);
         if (personalCounts.hydrogen > 0) parts.push(`💣 ${personalCounts.hydrogen}`);
         if (personalCounts.mirv > 0) parts.push(`🚀 ${personalCounts.mirv}`);
         if (personalCounts.warhead > 0) parts.push(`💥 ${personalCounts.warhead}`);
-        const personalText = parts.length > 0 ? parts.join("  ") : "0";
-        html += `<div class="personal-row">Your nukes: ${personalText}</div>`;
+        personalRow.textContent = `Your nukes: ${parts.length > 0 ? parts.join("  ") : "0"}`;
       }
+      panel.appendChild(personalRow);
     }
-
-    panel.innerHTML = html;
   }
 
   // The global/personal counts only change when nukes launch or detonate, so
