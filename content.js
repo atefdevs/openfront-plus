@@ -19,6 +19,9 @@
     tradeCaptures: false,
     tradeTransports: false,
     tradeWarships: false,
+    overlayTroopRate: true,
+    overlayGoldIncome: true,
+    buildProgress: true,
     goldPerSecond: true,
     goldPerMinute: true,
     troopPerSecond: false,
@@ -30,23 +33,26 @@
 
   function normalizeSettings(value) {
     const source = value && typeof value === "object" ? value : {};
-    return {
-      samCoverage: Boolean(source.samCoverage),
-      nukeGrouper: Boolean(source.nukeGrouper),
-      teammateMarkers: Boolean(source.teammateMarkers),
-      incomingNukeAlert: Boolean(source.incomingNukeAlert),
-      globalNukeActivity: Boolean(source.globalNukeActivity),
-      personalNukeTracker: Boolean(source.personalNukeTracker),
-      enemyNukeReadiness: Boolean(source.enemyNukeReadiness),
-      tradeIncome: Boolean(source.tradeIncome),
-      tradeCaptures: Boolean(source.tradeCaptures),
-      tradeTransports: Boolean(source.tradeTransports),
-      tradeWarships: Boolean(source.tradeWarships),
-      goldPerSecond: Boolean(source.goldPerSecond),
-      goldPerMinute: Boolean(source.goldPerMinute),
-      troopPerSecond: Boolean(source.troopPerSecond),
-      troopPerMinute: Boolean(source.troopPerMinute),
-    };
+    // Missing keys fall back to defaults. Additionally, a default-ON key that
+    // reads as false WITHOUT a user-touch marker is treated as an artifact of
+    // the pre-migration normalizer bug (which turned every newly shipped key
+    // into false on first save) and is rescued once. After the user toggles a
+    // switch, popup.js writes "<id>__touched": true and their choice sticks.
+    const out = {};
+    for (const key of Object.keys(DEFAULT_SETTINGS)) {
+      let v = source[key] === undefined
+        ? Boolean(DEFAULT_SETTINGS[key])
+        : Boolean(source[key]);
+      if (
+        source[key] === false &&
+        source[key + "__touched"] !== true &&
+        DEFAULT_SETTINGS[key] === true
+      ) {
+        v = Boolean(DEFAULT_SETTINGS[key]);
+      }
+      out[key] = v;
+    }
+    return out;
   }
 
   function postSettings() {
@@ -99,9 +105,47 @@
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data;
-    if (data?.source !== PAGE_SOURCE || data.type !== "READY") return;
-    bridgeReady = true;
-    postSettings();
+    if (data?.source !== PAGE_SOURCE) return;
+
+    if (data.type === "READY") {
+      bridgeReady = true;
+      // Record which bridge build is running so the popup can prove the
+      // extension was actually reloaded (Chrome does not hot-reload files).
+      try {
+        const version = String(data.payload?.version ?? "unknown");
+        browser.storage.local
+          .get({ openfrontPlusBoots: [] })
+          .then((stored) => {
+            const list = Array.isArray(stored.openfrontPlusBoots) ? stored.openfrontPlusBoots.slice(-4) : [];
+            list.push({ ts: Date.now(), version, host: location.hostname });
+            return browser.storage.local.set({ openfrontPlusBoots: list.slice(-5) });
+          })
+          .catch(() => {});
+      } catch (_) {}
+      postSettings();
+      return;
+    }
+
+    if (data.type === "ERROR") {
+      // Bridge errors are surfaced to the popup so they can be read even if
+      // the game tab is frozen (the popup is a separate process).
+      try {
+        const message = String(data.payload?.message ?? "");
+        browser.storage.local
+          .get({ openfrontPlusErrors: [] })
+          .then((stored) => {
+            const list = Array.isArray(stored.openfrontPlusErrors)
+              ? stored.openfrontPlusErrors.slice(-19)
+              : [];
+            list.push({ ts: Date.now(), message });
+            return browser.storage.local.set({
+              openfrontPlusErrors: list.slice(-20),
+            });
+          })
+          .catch(() => {});
+      } catch (_) {}
+      return;
+    }
   });
 
   browser.storage.onChanged.addListener((changes, areaName) => {
@@ -111,6 +155,20 @@
   });
 
   injectPageBridge();
+
+  // Record that the content script itself started, with the page it runs on,
+  // so the popup can distinguish "extension never injected" from
+  // "injected but the bridge never booted".
+  try {
+    browser.storage.local
+      .get({ openfrontPlusEvents: [] })
+      .then((stored) => {
+        const list = Array.isArray(stored.openfrontPlusEvents) ? stored.openfrontPlusEvents.slice(-9) : [];
+        list.push({ ts: Date.now(), kind: "content-script", host: location.hostname, href: location.href.slice(0, 200) });
+        return browser.storage.local.set({ openfrontPlusEvents: list.slice(-10) });
+      })
+      .catch(() => {});
+  } catch (_) {}
 
   browser.storage.local
     .get(STORAGE_KEY)

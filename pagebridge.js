@@ -23,11 +23,33 @@
   const TRADE_CAPTURES_HOVER_ID = "of-nuke-tools-trade-captures-hover";
   const TRADE_TRANSPORTS_HOVER_ID = "of-nuke-tools-trade-transports-hover";
   const TRADE_WARSHIPS_HOVER_ID = "of-nuke-tools-trade-warships-hover";
+  const TROOP_RATE_HOVER_ID = "of-nuke-tools-troop-rate-hover";
+  const GOLD_INCOME_HOVER_ID = "of-nuke-tools-gold-income-hover";
+  const BUILD_LAYER_ID = "of-nuke-tools-build-layer";
+  const BUILD_STYLE_ID = "of-nuke-tools-build-style";
   // Nuke costs from Config. Atom is flat 750k, Hydrogen 5M; a MIRV carrier is
   // 25M + 15M per MIRV already launched this game. The live MIRV price is read
   // from the player's `buildables()` worker call — 25M is just the fallback.
   const NUKE_COST_REFRESH_MS = 2000;
   const NUKE_COST_FALLBACK = { atom: 750000, hydro: 5000000, mirv: 25000000 };
+
+  // --- load-protection guard ---
+  // The game builds its world on the main thread; calling its state APIs while
+  // the match is still booting can chain-block the loader and freeze the
+  // page. So: no game method calls at all until the page has been up for
+  // GAME_BOOT_GUARD_MS, and the whole bridge goes quiet for HIBERNATE_MS after
+  // any single call or DOM op that exceeds SLOW_CALL_MS (logged to the popup
+  // so a future stall is diagnosable from a frozen tab).
+  const GAME_BOOT_GUARD_MS = 12000;
+  const SLOW_CALL_MS = 300;
+  const HIBERNATE_MS = 30000;
+  // Known-surface caches: positives are safe for 20s (a match never unmounts
+  // that fast), negatives re-check every second.
+  const KNOWN_SURFACE_POSITIVE_MS = 20000;
+  // Full-tree scans are banned; the bounded fallbacks below are the ceiling.
+  const MAX_WINDOW_KEYS = 5000;
+  const MAX_PLAYER_KEYS = 120;
+  const MAX_UNIT_PROPS = 400;
 
   const SAM_SETTLE_MS = 1500;
   const SAM_MODE_POLL_MS = 300;
@@ -52,7 +74,8 @@
   const TICKS_PER_SECOND = 10;
   const SAM_COOLDOWN_TICKS = 90;
   const DEFAULT_MAX_SAM_RANGE = 150;
-  const NUKE_SPEED_TILES_PER_TICK = 5.5;
+  const SAM_MISSILE_FALLBACK_SPEED = 12;
+  const NUKE_TARGETABLE_RANGE = 150;
   // Passive floor from Config.goldAdditionRate(): 100/tick (human) or 50/tick
   // (bot), times the lobby goldMultiplier. Ships and trains are lumps on top.
   const BASE_GOLD_PER_TICK = 100;
@@ -71,8 +94,9 @@
   const CITY_TYPE = "City";
   const PORT_TYPE = "Port";
   const WARSHIP_TYPE = "Warship";
-  const TRANSPORT_SHIP_TYPE = "Transport Ship";
-  const TRAIN_ENGINE_TYPE = "Engine";
+  // UnitType.TransportShip serializes as "Transport" — no "Ship" suffix.
+  const TRANSPORT_SHIP_TYPE = "Transport";
+  const TRAIN_CARRIAGE_TYPE = "Carriage";
   // Trains move several tiles a tick, so a stop can slip between our 100ms
   // samples; give the engine-tile match this much slack.
   const TRAIN_STATION_RADIUS = 3;
@@ -102,6 +126,9 @@
     tradeCaptures: false,
     tradeTransports: false,
     tradeWarships: false,
+    overlayTroopRate: false,
+    overlayGoldIncome: false,
+    buildProgress: false,
     goldPerSecond: false,
     goldPerMinute: false,
     troopPerSecond: false,
@@ -129,11 +156,18 @@
   let factoryIncomeEvents = []; // train station stops -> "factories"
   let shipTrackers = new Map(); // unitId -> { dist, lastTile, firstTile, owner, firstOwner, seenAt, dstId, dstTile, dstOwner }
   let trainTrackers = new Map(); // engineId -> { stops, lastStopKey, lastTile, owner }
+  // Per-player gold sampling for the hover overlay's income row (same model
+  // as the local panel: positive deltas over a sliding window).
+  const otherGoldTrackers = new Map(); // pid -> { samples: [{ gold, ts }] }
+  let lastOtherGoldSampleAt = 0;
+  // Per-player SOURCE-SPLIT events for the same row: every ship/train payout
+  // is credited to each actual recipient (the engine pays both parties), so
+  // the hovered player's ports/warships/factories rates can be estimated.
+  const otherSplitEvents = new Map(); // pid -> { ports: [], warships: [], factories: [] }
 
   // Troop rate state
   let troopRatePanelVisible = false;
   let troopSampleHistory = [];
-  let lastDisplayedRate = null;
 
   const objectIds = new WeakMap();
   let nextObjectId = 1;
@@ -143,7 +177,12 @@
   function callMethod(t, k, ...a) {
     const m = readProperty(t, k);
     if (typeof m !== "function") return undefined;
-    try { return m.apply(t, a); } catch (_) { return undefined; }
+    const t0 = performance.now();
+    let r;
+    try { r = m.apply(t, a); } catch (_) { return undefined; }
+    const cost = performance.now() - t0;
+    if (cost >= SLOW_CALL_MS) noteHotOp("game call", k, cost);
+    return r;
   }
   function toFiniteNumber(v, fb = Number.NaN) {
     if (v === null || v === undefined || v === "") return fb;
@@ -161,6 +200,31 @@
     const s = document.createElement("style");
     s.id = id; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
+  }
+
+  // Boot guard: the first seconds of a page have the game compiling its match
+  // on the main thread — nothing queues game calls during that window.
+  const GAME_BOOT_GUARD_ENABLED = globalThis.__OF_TEST_MODE__ !== true;
+  function isBootGuarded() {
+    return GAME_BOOT_GUARD_ENABLED && performance.now() < GAME_BOOT_GUARD_MS;
+  }
+
+  // Auto-hibernation tripwire. Any single game call OR DOM op slower than
+  // SLOW_CALL_MS parks the whole bridge for HIBERNATE_MS (page recovers
+  // instead of chaining into a dead tab) and reports the culprit to the
+  // popup, which is readable even while the tab is frozen.
+  let bridgeHibernationUntil = 0;
+  function isBridgeHibernating() { return performance.now() < bridgeHibernationUntil; }
+  function reportToPopup(message) {
+    try {
+      window.postMessage({ source: PAGE_SOURCE, type: "ERROR", payload: { message } }, "*");
+    } catch (_) {}
+    try { console.error("[Openfront+] " + message); } catch (_) {}
+  }
+  function noteHotOp(kind, name, cost) {
+    if (cost < SLOW_CALL_MS || isBridgeHibernating()) return;
+    bridgeHibernationUntil = performance.now() + HIBERNATE_MS;
+    reportToPopup(`auto-paused: ${kind} "${name}" took ${Math.round(cost)}ms. Re-enables in 30s.`);
   }
 
   /* game context discovery */
@@ -233,28 +297,15 @@
     return collectContextCandidates(els);
   }
 
-  function discoverContextFromAllCustomElements() {
-    // Custom elements (tagName contains "-") are where the game keeps state,
-    // and scanning just those is way cheaper than scanning every element.
-    try {
-      const customEls = Array.from(document.querySelectorAll("*")).filter(
-        el => el.tagName.includes("-")
-      );
-      const ctx = collectContextCandidates(customEls);
-      if (ctx) return ctx;
-    } catch (_) {}
-    return null;
-  }
-
-  function discoverContextFromAllElements() {
-    try { return collectContextCandidates(Array.from(document.querySelectorAll("*"))); } catch (_) { return null; }
-  }
-
-  // Last resort: also probe window globals the game might have left around
+  // Full-tree scans (querySelectorAll("*")) are banned: on the huge match DOM
+  // they are multi-second blocks and were the #1 freeze source. Context is
+  // discovered only from known selectors and a bounded window probe.
   function discoverContextFromWindow() {
     try {
       const candidates = [];
-      for (const key of Object.keys(window)) {
+      let checked = 0;
+      for (const key in window) {
+        if (++checked > MAX_WINDOW_KEYS) break;
         try {
           const val = window[key];
           if (val && typeof val === "object" && isUsableGame(val)) candidates.push(val);
@@ -279,50 +330,57 @@
 
   let cachedKnownSurface = null;
   let lastKnownSurfaceCheckAt = 0;
+  // Tag-only selectors: Blink resolves tag names via its index, so this never
+  // walks the tree. Positive caches for 20s, negatives re-checked every 1s.
   function hasKnownGameSurface() {
-    // Any custom element present = the game is mounted. Two full-DOM scans per
-    // call, and isGameActive() asks every tick, so this is cached hard.
     const now = performance.now();
-    if (cachedKnownSurface !== null && now - lastKnownSurfaceCheckAt < KNOWN_SURFACE_MS) return cachedKnownSurface;
+    if (cachedKnownSurface === true) {
+      if (now - lastKnownSurfaceCheckAt < KNOWN_SURFACE_POSITIVE_MS) return true;
+    } else if (cachedKnownSurface === false) {
+      if (now - lastKnownSurfaceCheckAt < KNOWN_SURFACE_MS) return false;
+    }
     lastKnownSurfaceCheckAt = now;
+    const t0 = performance.now();
     try {
-      cachedKnownSurface = document.querySelectorAll("*[class]").length > 10 &&
-        Array.from(document.querySelectorAll("*")).some(el => el.tagName.includes("-"));
-      return cachedKnownSurface;
+      cachedKnownSurface = Boolean(document.querySelector(
+        "player-info-overlay, build-menu, main-radial-menu, game-left-sidebar, game-right-sidebar, " +
+        "leader-board, team-stats, spawn-timer, unit-display, control-panel, canvas, game-canvas, " +
+        "game-view, game-hud, game-ui, game-overlay, game-container, hud-overlay, hud-panel, " +
+        "hud-container, player-hud, player-ui, player-stats, radial-menu, action-menu, context-menu, " +
+        "leaderboard-panel, score-panel, spawn-overlay, spawn-panel, spawn-view, game-app, app-root, " +
+        "of-game, openfront-game"
+      ));
     } catch (_) {
       cachedKnownSurface = false;
-      return false;
     }
+    noteHotOp("surface-check", "hasKnownGameSurface", performance.now() - t0);
+    return cachedKnownSurface;
   }
   function getGameContext() {
+    if (isBridgeHibernating()) return null;
     const now = performance.now();
     if (now - lastContextRefreshAt < CONTEXT_REFRESH_MS &&
         isUsableGame(cachedContext?.game) && isUsableTransform(cachedContext?.transform)) return cachedContext;
     // Negative cache: if nothing was found, back off for a moment instead of
     // rescanning the whole DOM on every single frame.
     if (!cachedContext && now - lastContextMissAt < CONTEXT_MISS_MS) return null;
+    if (isBootGuarded() && !cachedContext) return null;
     lastContextRefreshAt = now;
 
     // Fastest path first: known selectors
     const known = discoverKnownContext();
     if (known) return known;
-
-    // Then all custom elements (cheaper than everything)
-    const fromCustom = discoverContextFromAllCustomElements();
-    if (fromCustom) return fromCustom;
     lastContextMissAt = now;
 
     if (cachedContext && !hasKnownGameSurface()) {
       cachedContext = null; cachedPlayerViewsGame = null; cachedPlayerViews = [];
     }
 
-    // Heavier fallbacks on a timer
+    // Heavier fallback on a timer
     if (!cachedContext && now - lastFullContextScanAt >= FULL_CONTEXT_SCAN_MS) {
       lastFullContextScanAt = now;
       const fromWin = discoverContextFromWindow();
       if (fromWin) return fromWin;
-      const fb = discoverContextFromAllElements();
-      if (fb) return fb;
     }
 
     return (isUsableGame(cachedContext?.game) && isUsableTransform(cachedContext?.transform)) ? cachedContext : null;
@@ -347,26 +405,7 @@
     return getObjectId(p);
   }
   function getPlayerTeam(p) {
-    // The team may live on the player, a nested data object, or be a method.
-    // During spawn phases, however, the field can also be a number or a
-    // different name, so try the common variants before falling back.
-    const sources = [
-      callMethod(p, "team"),
-      readProperty(p, "team"),
-      callMethod(readProperty(p, "data"), "team"),
-      readProperty(readProperty(p, "data"), "team"),
-      callMethod(p, "teamId"),
-      readProperty(p, "teamId"),
-      callMethod(p, "playerTeamId"),
-      readProperty(p, "playerTeamId"),
-      readProperty(p, "unitTeam"),
-      readProperty(p, "affiliation"),
-    ];
-    for (const raw of sources) {
-      if (typeof raw === "number") return String(raw);
-      if (typeof raw === "string" && raw.trim() && raw !== "null" && raw !== "undefined") return raw;
-    }
-    return null;
+    return String(callMethod(p, "team") ?? readProperty(readProperty(p, "data"), "team") ?? "") || null;
   }
   function isSamePlayer(a, b) { if (!a || !b) return false; if (a === b) return true; return getPlayerId(a) === getPlayerId(b); }
   function isOnSameTeam(a, b) {
@@ -591,13 +630,16 @@
   }
 
   function getLargestCanvas() {
+    // The match canvas persists once mounted, so cache it until it is
+    // disconnected — never scan canvases per mouse move. offsetWidth/Height
+    // read layout WITHOUT forcing a document reflow (rect does).
     const now = performance.now();
-    if (now - canvasCacheAt < 1000 && canvasCache?.isConnected) return canvasCache;
+    if (canvasCache?.isConnected && now - canvasCacheAt < FULL_CONTEXT_SCAN_MS) return canvasCache;
+    if (now - canvasCacheAt < 500) return canvasCache;
     canvasCacheAt = now; canvasCache = null;
     let largest = 0;
     for (const c of document.querySelectorAll("canvas")) {
-      const r = c.getBoundingClientRect();
-      const area = r.width * r.height;
+      const area = c.offsetWidth * c.offsetHeight;
       if (area > largest) { largest = area; canvasCache = c; }
     }
     return canvasCache;
@@ -642,6 +684,135 @@
     return safeMax - 480 / (lvl + 5);
   }
 
+  // Motion-plan reader. Plan-driven units (nukes, trade ships, trains) don't
+  // emit per-tick unit updates, so the game's public motionPlans() map is the
+  // freshest source for their progress: { len, idx } where idx is the path
+  // index the unit sits on this tick.
+  function getMotionPlanRec(game, numericId) {
+    if (!game || numericId === null || !Number.isFinite(numericId)) return null;
+    const plans = callMethod(game, "motionPlans");
+    if (!plans || typeof plans.get !== "function") return null;
+    const rec = plans.get(numericId);
+    if (!rec || !Array.isArray(rec.path) || rec.path.length === 0) return null;
+    return rec;
+  }
+
+  function getMotionPlanProgress(game, numericId) {
+    const rec = getMotionPlanRec(game, numericId);
+    if (!rec) return null;
+    const st = toFiniteNumber(rec.startTick, null);
+    if (st === null) return null;
+    const tps = Math.max(1, toFiniteNumber(rec.ticksPerStep, 1));
+    const tick = getGameTick(game);
+    if (!Number.isFinite(tick)) return null;
+    return {
+      rec,
+      len: rec.path.length,
+      idx: Math.max(0, Math.min(rec.path.length - 1, Math.floor((tick - st) / tps))),
+    };
+  }
+
+  function getSamMissileSpeed(game) {
+    const cfg = callMethod(game, "config") ?? readProperty(game, "config") ?? null;
+    const v = toFiniteNumber(callMethod(cfg, "defaultSamMissileSpeed"), null);
+    return v !== null && v > 0 ? v : SAM_MISSILE_FALLBACK_SPEED;
+  }
+
+  // Mirrors Config.dynamicSamRange(): while an upgrade is in flight the
+  // effective range interpolates from the old range to the target level's
+  // range over the upgrade duration; before/after it's the plain samRange().
+  function getSamEffectiveRange(game, sam, atTick) {
+    const lvl = getUnitLevel(sam);
+    const st = readProperty(sam, "state") ?? sam;
+    const upStart = toFiniteNumber(readProperty(st, "samUpgradeStartTick"), null);
+    if (upStart === null) return getSamRange(game, lvl);
+    const targetLvl = Math.max(lvl, Math.round(toFiniteNumber(readProperty(st, "samUpgradeTargetLevel"), lvl)));
+    const startRange = toFiniteNumber(readProperty(st, "samUpgradeStartRange"), null) ?? getSamRange(game, lvl);
+    let duration = toFiniteNumber(readProperty(st, "samUpgradeDuration"), null);
+    if (duration === null || duration <= 0) duration = Math.max(1, Math.floor(getSamCooldownTicks(game) / 2));
+    const nowTicks = Number.isFinite(atTick) ? atTick : getGameTick(game);
+    if (!Number.isFinite(nowTicks)) return getSamRange(game, lvl);
+    const elapsed = nowTicks - upStart;
+    if (elapsed <= 0) return startRange;
+    if (elapsed >= duration) return getSamRange(game, targetLvl);
+    return startRange + ((getSamRange(game, targetLvl) - startRange) * elapsed) / duration;
+  }
+
+  // Flight geometry of one incoming nuke: path points (motion plan preferred,
+  // nukeState trajectory fallback), current index on that path, pre-launch
+  // waitTicks (only meaningful in the trajectory fallback — the plan's
+  // startTick already includes them), and target tile.
+  function getNukeNav(game, unit) {
+    const nav = { points: null, curIdx: null, waitTicks: 0, targetTile: getNukeTargetTileForAlert(unit) };
+    const prog = getMotionPlanProgress(game, toFiniteNumber(callMethod(unit, "id"), null));
+    if (prog) {
+      nav.points = prog.rec.path;
+      nav.curIdx = prog.idx;
+    }
+    const ns = callMethod(unit, "nukeState") ?? readProperty(unit, "nukeState") ?? null;
+    if (ns) {
+      if (!nav.points) {
+        const traj = readProperty(ns, "trajectory");
+        if (Array.isArray(traj) && traj.length > 0) {
+          nav.points = traj.map(t => readProperty(t, "tile"));
+          const idx = toFiniteNumber(readProperty(ns, "trajectoryIndex"), 0);
+          nav.curIdx = Math.max(0, Math.min(nav.points.length - 1, idx));
+          nav.waitTicks = Math.max(0, toFiniteNumber(readProperty(ns, "waitTicks"), 0));
+        }
+      }
+    }
+    return nav;
+  }
+
+  // All feasible fire-tick offsets (ascending) at which `defender` can put a
+  // missile on the nuke described by `nav`, mirroring the engine's preshot
+  // math (SAMLauncherExecution): the missile must reach a trajectory point no
+  // later than the nuke does, with that point inside the launcher's
+  // upgrade-aware range at interception time and within the targetable
+  // segment (near target or launch). Empty = unreachable.
+  function samEngagementOffsets(game, defender, nav, missileSpeed) {
+    const pts = nav.points;
+    if (!pts || pts.length === 0 || nav.curIdx === null) return [];
+    const defTile = getUnitTile(defender);
+    if (defTile === null) return [];
+    const tick = getGameTick(game);
+    if (!Number.isFinite(tick)) return [];
+    const dx0 = toFiniteNumber(callMethod(game, "x", defTile));
+    const dy0 = toFiniteNumber(callMethod(game, "y", defTile));
+    if (!Number.isFinite(dx0) || !Number.isFinite(dy0)) return [];
+    let sx = NaN, sy = NaN;
+    const tx = nav.targetTile !== null ? toFiniteNumber(callMethod(game, "x", nav.targetTile)) : NaN;
+    const ty = nav.targetTile !== null ? toFiniteNumber(callMethod(game, "y", nav.targetTile)) : NaN;
+    const targetableSq = NUKE_TARGETABLE_RANGE * NUKE_TARGETABLE_RANGE;
+    const remaining = pts.length - nav.curIdx;
+    const stride = remaining > 240 ? 3 : remaining > 120 ? 2 : 1;
+    const out = [];
+    for (let i = nav.curIdx; i < pts.length; i += stride) {
+      const p = pts[i];
+      const px = toFiniteNumber(callMethod(game, "x", p));
+      const py = toFiniteNumber(callMethod(game, "y", p));
+      if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+      const nukeAt = (i - nav.curIdx) + nav.waitTicks;
+      if (nukeAt < 0) continue;
+      const travel = Math.ceil((Math.abs(px - dx0) + Math.abs(py - dy0)) / missileSpeed);
+      if (nukeAt < travel) continue;
+      if ((px - dx0) ** 2 + (py - dy0) ** 2 > getSamEffectiveRange(game, defender, tick + nukeAt) ** 2) continue;
+      if (Number.isNaN(sx)) {
+        sx = toFiniteNumber(callMethod(game, "x", pts[nav.curIdx]));
+        sy = toFiniteNumber(callMethod(game, "y", pts[nav.curIdx]));
+      }
+      const nearTgt = Number.isFinite(tx) && Number.isFinite(ty)
+        ? (px - tx) ** 2 + (py - ty) ** 2 <= targetableSq : true;
+      const nearSrc = Number.isFinite(sx) && Number.isFinite(sy)
+        ? (px - sx) ** 2 + (py - sy) ** 2 <= targetableSq : false;
+      if (!(nearTgt || nearSrc)) continue;
+      const fireAt = nukeAt - travel;
+      // Opportunities less than 2 ticks apart are redundant — one shot covers.
+      if (out.length === 0 || fireAt - out[out.length - 1] >= 2) out.push(fireAt);
+    }
+    return out;
+  }
+
   function collectHostileSams(game) {
     const now = performance.now();
     if (samDataCache.game === game && now - samDataCache.at < SAM_CACHE_MS) return samDataCache;
@@ -668,16 +839,20 @@
   function getSamEstimate(game, targetTile) {
     const col = collectHostileSams(game);
     if (!col.available) return null;
-    const stacked = new Map();
+    // Co-located launchers act as one battery: use the widest effective
+    // (upgrade-aware) range in the stack instead of a summed-level range.
+    const stackedRange = new Map();
     for (const s of col.sams) {
       const key = getSamStackKey(s);
-      stacked.set(key, (stacked.get(key) || 0) + getUnitLevel(s));
+      const r = getSamEffectiveRange(game, s);
+      if (!(r > 0)) continue;
+      stackedRange.set(key, Math.max(stackedRange.get(key) || 0, r));
     }
     const covering = []; const owners = new Map();
     for (const s of col.sams) {
       const tile = getUnitTile(s); if (tile === null) continue;
-      const key = getSamStackKey(s);
-      const range = getSamRange(game, stacked.get(key) || getUnitLevel(s));
+      const range = stackedRange.get(getSamStackKey(s)) || 0;
+      if (!(range > 0)) continue;
       if (getDistanceSquared(game, tile, targetTile) > range * range) continue;
       covering.push(s);
       const own = getUnitOwner(s); if (own) owners.set(getPlayerId(own), own);
@@ -818,26 +993,6 @@
 
   function getNukeTargetTile(game, unit) {
     return toFiniteNumber(callMethod(unit, "targetTile") ?? readProperty(readProperty(unit, "data"), "targetTile"), null);
-  }
-
-  function getRemainingImpactTicks(unit) {
-    let trajectory = readProperty(unit, "trajectory");
-    if (!Array.isArray(trajectory)) {
-      const data = readProperty(unit, "data");
-      if (data) trajectory = readProperty(data, "trajectory");
-    }
-    if (!Array.isArray(trajectory)) trajectory = callMethod(unit, "trajectory");
-
-    let index = toFiniteNumber(readProperty(unit, "trajectoryIndex"), null);
-    if (index === null) {
-      const data = readProperty(unit, "data");
-      if (data) index = toFiniteNumber(readProperty(data, "trajectoryIndex"), null);
-    }
-    if (index === null) index = toFiniteNumber(callMethod(unit, "trajectoryIndex"), null);
-
-    if (!Array.isArray(trajectory) || trajectory.length === 0 || index === null) return null;
-    const remaining = trajectory.length - index;
-    return remaining >= 0 ? remaining : 0;
   }
 
   function buildNukeLabelKey(ac, hc) { return `a${ac}h${hc}`; }
@@ -1001,11 +1156,8 @@
   }
 
   // === Teammate markers (spawn phase) ===
-  let teammateAnimationFrame = null;
   let teammateScanCache = [];
   let lastTeammateScanAt = 0;
-
-  let teammateDiagLogged = false;
   let teammateColor = "#22c55e";
   const teammateEntries = new Map();
 
@@ -1038,106 +1190,84 @@
   }
 
   function isElementVisible(el) {
-    if (!el?.isConnected) return false;
-    const r = el.getBoundingClientRect?.();
-    if (!r || (r.width <= 0 && r.height <= 0)) return false;
-    const s = window.getComputedStyle(el);
-    return s.display !== "none" && s.visibility !== "hidden" && s.opacity !== "0";
+    // Presence check only — getBoundingClientRect/getComputedStyle force
+    // style+layout on the whole document and can block a huge match DOM.
+    return Boolean(el?.isConnected && !el.hidden && el.getAttribute?.("hidden") === null);
   }
 
-  // The game has renamed its spawn-phase internals across versions, so look for
-  // booleans, spawn-y state strings, keys whose name mentions "spawn", and
-  // finally spawn-named DOM elements. Each layer only matches real game state,
-  // so false positives stay low.
+  let cachedSpawnDomResult = false;
+  let lastSpawnDomCheckAt = 0;
   function isSpawnPhase(game) {
+    if (!hasKnownGameSurface()) return false;
     const fd = callMethod(game, "frameData") ?? readProperty(game, "frameData");
-    const flagKeys = ["inSpawnPhase", "isInSpawnPhase", "isSpawnPhase", "spawnPhase", "spawnActive", "isSpawning"];
-    const stateKeys = ["phase", "currentPhase", "gamePhase", "phaseState", "phaseName", "state", "currentState", "gameState", "status", "mode"];
-
-    const readFlag = (obj) => {
-      if (!obj || typeof obj !== "object") return null;
-      for (const k of flagKeys) {
-        let v = readProperty(obj, k);
-        if (typeof v === "function") v = callMethod(obj, k);
-        if (typeof v === "boolean") return v;
-      }
-      return null;
-    };
-    const readState = (obj) => {
-      if (!obj || typeof obj !== "object") return null;
-      for (const k of stateKeys) {
-        let v = readProperty(obj, k);
-        if (typeof v === "function") v = callMethod(obj, k);
-        if (typeof v === "string" && v.trim() && /spawn/i.test(v)) return true;
-      }
-      return null;
-    };
-    const scanKeys = (obj) => {
-      if (!obj || typeof obj !== "object") return null;
-      try {
-        for (const k of Object.keys(obj)) {
-          if (!k.toLowerCase().includes("spawn")) continue;
-          let v = readProperty(obj, k);
-          if (typeof v === "function") v = callMethod(obj, k);
-          if (typeof v === "boolean") return v;
-          if (typeof v === "string" && v.trim() && /spawn/i.test(v)) return true;
-        }
-      } catch (_) {}
-      return null;
-    };
-
-    for (const obj of [fd, game, readProperty(game, "data")]) {
-      const f = readFlag(obj);
-      if (f !== null) return f;
-      const s = readState(obj);
-      if (s !== null) return s;
-      const sc = scanKeys(obj);
-      if (sc !== null) return sc;
+    let fv = readProperty(fd, "inSpawnPhase");
+    if (typeof fv === "function") fv = callMethod(fd, "inSpawnPhase");
+    if (typeof fv === "boolean") return fv;
+    for (const k of ["inSpawnPhase", "isInSpawnPhase", "isSpawnPhase"]) {
+      const raw = readProperty(game, k);
+      const val = typeof raw === "function" ? callMethod(game, k) : raw;
+      if (typeof val === "boolean") return val;
     }
-
-    // DOM: known spawn elements, then any visible element whose tag name
-    // contains "spawn" (custom elements the game renders).
-    const known = document.querySelector(
-      'spawn-timer, spawn-overlay, spawn-selection, spawn-panel, spawn-view, spawn-screen, ' +
-      'spawn-selection-menu, spawn-location, spawn-picker, spawn-hud, spawn-status, ' +
-      'spawn-countdown, spawn-choice, spawn-menu, ' +
-      '[data-game-phase="spawn"], [data-phase="spawn"], [data-phase="spawning"]'
-    );
-    if (isElementVisible(known)) return true;
-    try {
-      const all = document.querySelectorAll("*");
-      for (const n of all) {
-        if (typeof n.tagName !== "string" || !n.tagName.toLowerCase().includes("spawn")) continue;
-        if (isElementVisible(n)) return true;
-      }
-    } catch (_) {}
-    return false;
+    // Tag-only selectors (no attribute selectors — those force full-tree
+    // scans), throttled to 3s and cached.
+    const now = performance.now();
+    if (now - lastSpawnDomCheckAt >= 3000) {
+      lastSpawnDomCheckAt = now;
+      const t0 = performance.now();
+      try {
+        const spawnEl = document.querySelector(
+          'spawn-timer, spawn-overlay, spawn-selection, spawn-panel, spawn-view, spawn-screen, ' +
+          'spawn-selection-menu, spawn-location, spawn-picker, spawn-hud, spawn-status, ' +
+          'spawn-countdown, spawn-choice, spawn-menu'
+        );
+        cachedSpawnDomResult = isElementVisible(spawnEl);
+      } catch (_) { cachedSpawnDomResult = false; }
+      noteHotOp("spawn-check", "isSpawnPhase", performance.now() - t0);
+    }
+    return cachedSpawnDomResult;
   }
 
-  function isGameActive(game) {
-    if (!game) return false;
+  let cachedActiveGame = null;
+  let lastActiveCheckAt = 0;
+  let lastActiveCheck = false;
+  // A game object exists while the match is still loading; calling its state
+  // methods during that window can force synchronous world-building and stall
+  // the tab at "game is starting". No method is called on a game until it has
+  // existed for GAME_SETTLE_MS.
+  const GAME_SETTLE_MS = 1500;
+  const gameFirstSeen = new WeakMap();
+  function isGameSettled(game) {
+    if (!game || (typeof game !== "object" && typeof game !== "function")) return false;
+    const first = gameFirstSeen.get(game);
+    if (first === undefined) {
+      gameFirstSeen.set(game, performance.now());
+      return false;
+    }
+    return performance.now() - first >= GAME_SETTLE_MS;
+  }
+  function isGameActiveUncached(game) {
+    if (isBridgeHibernating() || isBootGuarded()) return false;
+    if (!isGameSettled(game)) return false;
+    if (!hasKnownGameSurface()) return false;
     if (isSpawnPhase(game)) return false;
     const ticks = toFiniteNumber(callMethod(game, "ticks"), 0);
-    if (ticks <= 0) return false;
-    if (!hasKnownGameSurface()) return false;
-    return true;
+    return ticks > 0;
+  }
+  function isGameActive(game) {
+    if (!game) return false;
+    // isGameActive is asked by every feature every work tick; the answer
+    // cannot legitimately change faster than this.
+    const now = performance.now();
+    if (game === cachedActiveGame && now - lastActiveCheckAt < 250) return lastActiveCheck;
+    cachedActiveGame = game; lastActiveCheckAt = now;
+    lastActiveCheck = isGameActiveUncached(game);
+    return lastActiveCheck;
   }
 
   function getNameLocation(player) {
     const loc = callMethod(player, "nameLocation") ?? readProperty(readProperty(player, "data"), "nameLocation");
-    if (loc && typeof loc === "object") {
-      const x = toFiniteNumber(readProperty(loc, "x")), y = toFiniteNumber(readProperty(loc, "y"));
-      if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
-    }
-    // Fall back to position fields the game may expose directly on the player.
-    for (const key of ["position", "location", "worldPos", "pos", "spawnPos", "tilePos", "namePending"]) {
-      const v = callMethod(player, key) ?? readProperty(player, key);
-      if (v && typeof v === "object") {
-        const x = toFiniteNumber(readProperty(v, "x")), y = toFiniteNumber(readProperty(v, "y"));
-        if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
-      }
-    }
-    return null;
+    const x = toFiniteNumber(readProperty(loc, "x")), y = toFiniteNumber(readProperty(loc, "y"));
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
   }
 
   function hashString(value) {
@@ -1197,44 +1327,41 @@
     }
   }
 
+  let teammateAnimationFrame = null;
+  // Teammate markers run on their own rAF loop (not the master loop): the
+  // master gates game-work behind isGameActive, but markers exist during the
+  // spawn window when the game is NOT active.
+  function ensureTeammateLoop() {
+    if (teammateAnimationFrame !== null || !settings.teammateMarkers) return;
+    teammateAnimationFrame = requestAnimationFrame(syncTeammateMarkers);
+  }
+
   function syncTeammateMarkers() {
+    teammateAnimationFrame = null;
     if (!settings.teammateMarkers) {
       clearTeammateEntries();
-      teammateAnimationFrame = null;
       return;
     }
-
+    if (isBridgeHibernating() || isBootGuarded()) {
+      teammateAnimationFrame = requestAnimationFrame(syncTeammateMarkers);
+      return;
+    }
     const ctx = getGameContext();
     if (!ctx?.game || !ctx?.transform) {
       teammateAnimationFrame = requestAnimationFrame(syncTeammateMarkers);
       return;
     }
-
-    if (!teammateDiagLogged) {
-      teammateDiagLogged = true;
-      let keys = "unreadable";
-      let ticks = "?";
-      try {
-        const fd = typeof ctx.game.frameData === "function" ? ctx.game.frameData() : ctx.game.frameData;
-        keys = fd && typeof fd === "object" ? Object.keys(fd).join(", ") : "none";
-      } catch (_) {}
-      try { ticks = typeof ctx.game.ticks === "function" ? String(ctx.game.ticks()) : "n/a"; } catch (_) {}
-      console.log(
-        "[Openfront+ Spawn] = isSpawnPhase:", isSpawnPhase(ctx.game),
-        "isGameActive:", isGameActive(ctx.game),
-        "ticks:", ticks, "| frameData keys:", keys,
-      );
+    if (!isGameSettled(ctx.game)) {
+      teammateAnimationFrame = requestAnimationFrame(syncTeammateMarkers);
+      return;
     }
-
-    // Show markers whenever the game object exists but is not actively playing
-    // (that is the spawn / pre-match window). This does not depend on a fragile
-    // spawn-phase flag, so it survives game-version renames.
-    if (isGameActive(ctx.game)) {
+    if (!isSpawnPhase(ctx.game)) {
       clearTeammateEntries();
       teammateAnimationFrame = requestAnimationFrame(syncTeammateMarkers);
       return;
     }
-
+    // Note: no tick requirement here — spawn time genuinely reports ticks=0,
+    // isSpawnPhase() is the gate (frameData + surface).
     const now = performance.now();
     if (now - lastTeammateScanAt >= TEAMMATE_SCAN_MS) {
       teammateScanCache = collectTeammates(ctx.game);
@@ -1255,33 +1382,32 @@
       if (entry.x !== screen.x) { entry.marker.style.setProperty("--team-x", `${screen.x}px`); entry.x = screen.x; }
       if (entry.y !== screen.y) { entry.marker.style.setProperty("--team-y", `${screen.y}px`); entry.y = screen.y; }
     }
-
     teammateAnimationFrame = requestAnimationFrame(syncTeammateMarkers);
   }
 
   function setTeammateMarkersEnabled(on) {
     settings.teammateMarkers = !!on;
-    if (!on) {
+    if (on) {
+      ensureTeammateLoop();
+    } else {
       if (teammateAnimationFrame !== null) {
         cancelAnimationFrame(teammateAnimationFrame);
         teammateAnimationFrame = null;
       }
       clearTeammateEntries();
       document.getElementById(TEAMMATE_STYLE_ID)?.remove();
-      return;
     }
-    if (teammateAnimationFrame === null) {
-      syncTeammateMarkers();
-    }
+    ensureMasterLoop();
   }
 
   // === Incoming nuke alert ===
   let lastAlertScanAt = 0;
   let prevAlertData = "";
   let alertPanelVisible = false;
-  let currentAlertRows = [];
+  // Rows keyed by nuke type — timers re-sort rows every scan, so positional
+  // indexing would update the wrong elements whenever two rows swap.
+  const currentAlertRows = new Map();
   let prevNukeData = new Map();
-  let notificationTimeout = null;
 
   function ensureAlertStyle() {
     appendStyle(ALERT_STYLE_ID, `
@@ -1387,9 +1513,8 @@
     document.getElementById(ALERT_PANEL_ID)?.remove();
     document.getElementById(ALERT_STYLE_ID)?.remove();
     prevAlertData = "";
-    currentAlertRows = [];
+    currentAlertRows.clear();
     prevNukeData.clear();
-    if (notificationTimeout) { clearTimeout(notificationTimeout); notificationTimeout = null; }
     alertPanelVisible = false;
   }
 
@@ -1449,7 +1574,9 @@
     }
     try {
       if (typeof player === "object" && player !== null) {
-        for (const key of Object.keys(player)) {
+        let checked = 0;
+        for (const key in player) {
+          if (++checked > MAX_PLAYER_KEYS) break;
           const val = readProperty(player, key);
           if (Array.isArray(val) && val.includes(tile)) return true;
         }
@@ -1482,10 +1609,13 @@
       if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
     }
     const seen = new Set();
+    let scanned = 0;
     try {
       for (let obj = unit; obj && obj !== Object.prototype; obj = Object.getPrototypeOf(obj)) {
+        if (scanned > MAX_UNIT_PROPS) break;
         const props = Object.getOwnPropertyNames(obj);
         for (const key of props) {
+          if (++scanned > MAX_UNIT_PROPS) break;
           if (seen.has(key)) continue;
           seen.add(key);
           try {
@@ -1504,8 +1634,39 @@
     return null;
   }
 
-  let _timerLogged = false;
+  // Config.nukeSpeed(): tiles per tick, used only when the live trajectory
+  // isn't readable (older builds / minified clients).
+  function getNukeSpeedTilesPerTick(u) {
+    const t = getUnitType(u);
+    if (t === MIRV_WARHEAD_TYPE) return 22;
+    if (t === "MIRV") return 15;
+    return 10; // Atom Bomb / Hydrogen Bomb
+  }
+
   function getRemainingImpactTicksForAlert(unit, game) {
+    // Tick-exact from the game's own motion plans. Nukes always record one,
+    // and its startTick already includes waitTicks (staggered silo launches).
+    // Plan-driven units don't emit per-tick unit updates, so this stays fresh
+    // even when nukeState's trajectoryIndex would lag.
+    if (game) {
+      const prog = getMotionPlanProgress(game, toFiniteNumber(callMethod(unit, "id"), null));
+      if (prog) {
+        const remaining = (prog.len - 1) - prog.idx;
+        if (remaining >= 0) return remaining;
+      }
+    }
+    // Fallback: nukeState trajectory, using the engine's own formula
+    // (see SAMLauncherExecution): flight ticks left plus remaining waitTicks.
+    const ns = callMethod(unit, "nukeState") ?? readProperty(unit, "nukeState") ?? null;
+    if (ns) {
+      const traj = readProperty(ns, "trajectory");
+      const idx = toFiniteNumber(readProperty(ns, "trajectoryIndex"), 0);
+      if (Array.isArray(traj) && traj.length > 0) {
+        const wt = toFiniteNumber(readProperty(ns, "waitTicks"), 0);
+        const remaining = traj.length - 1 - idx + wt;
+        if (remaining >= 0) return remaining;
+      }
+    }
     for (const key of ["remainingTicks", "timeToImpact", "impactTimer", "eta", "ticksToImpact", "impactIn"]) {
       const val = toFiniteNumber(readProperty(unit, key), null) ?? toFiniteNumber(callMethod(unit, key), null);
       if (val !== null && val >= 0) return val;
@@ -1551,26 +1712,10 @@
             const dx = targetX - currentX;
             const dy = targetY - currentY;
             const dist = Math.sqrt(dx * dx + dy * dy);
-            return Math.ceil(dist / NUKE_SPEED_TILES_PER_TICK);
+            return Math.ceil(dist / getNukeSpeedTilesPerTick(unit));
           }
         }
       }
-    }
-
-    if (!_timerLogged) {
-      _timerLogged = true;
-      console.log("[NukeTimer] Could not determine ticks – dumping first nuke unit keys:");
-      try {
-        const keys = new Set();
-        for (let o = unit; o && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
-          Object.getOwnPropertyNames(o).forEach(k => keys.add(k));
-        }
-        console.log("Keys:", [...keys].sort().join(", "));
-        console.log("targetTile:", readProperty(unit, "targetTile"));
-        console.log("x:", readProperty(unit, "x"), "y:", readProperty(unit, "y"));
-        const data = readProperty(unit, "data");
-        if (data) console.log("data.x:", readProperty(data, "x"), "data.y:", readProperty(data, "y"));
-      } catch (e) { console.error(e); }
     }
 
     return null;
@@ -1620,7 +1765,7 @@
 
       const samTile = getUnitTile(sam);
       if (samTile === null) continue;
-      const range = getSamRange(game, getUnitLevel(sam));
+      const range = getSamEffectiveRange(game, sam);
       const rangeSq = range * range;
       for (const tile of targetTiles) {
         if (getDistanceSquared(game, samTile, tile) <= rangeSq) {
@@ -1633,24 +1778,83 @@
     return defenders;
   }
 
-  function computeSamDefenseForAlert(game, targetTiles, secondsUntilImpact) {
+  // Interception capacity for a group of incoming nukes. Engine-faithful when
+  // flight geometry is available: each defender gets one shot slot per tube
+  // (free tubes cycle from now, queued tubes join as their reload finishes),
+  // and a slot counts only if it's ready by some feasible preshot launch
+  // moment along that nuke's flight path. Falls back to pure range coverage
+  // when no navs exist.
+  function computeSamDefenseForAlert(game, group, secondsUntilImpact) {
     if (secondsUntilImpact === null) return null;
-    const ticksWindow = Math.max(0, secondsUntilImpact * TICKS_PER_SECOND);
+    const targetTiles = group.tiles;
     const defenders = collectFriendlySamsNearForAlert(game, targetTiles);
-    if (defenders.length === 0) return { total: 0, samCount: 0, covered: 0 };
+    const navs = Array.isArray(group.navs) ? group.navs : [];
+    const usableNavs = navs.filter(n => n && Array.isArray(n.points) && n.curIdx !== null);
+
+    if (defenders.length === 0 || usableNavs.length === 0) {
+      const ticksWindow = Math.max(0, secondsUntilImpact * TICKS_PER_SECOND);
+      if (defenders.length === 0) return { total: 0, samCount: 0, covered: 0 };
+      let total = 0;
+      const coveredTiles = new Set();
+      for (const sam of defenders) {
+        total += estimateSamShotsInWindow(game, sam, ticksWindow);
+        const samTile = getUnitTile(sam);
+        if (samTile === null) continue;
+        const range = getSamEffectiveRange(game, sam);
+        const rangeSq = range * range;
+        for (const tile of targetTiles) {
+          if (getDistanceSquared(game, samTile, tile) <= rangeSq) coveredTiles.add(tile);
+        }
+      }
+      return { total, samCount: defenders.length, covered: coveredTiles.size };
+    }
+
+    const missileSpeed = getSamMissileSpeed(game);
+    const tick = getGameTick(game);
+    const cd = getSamCooldownTicks(game);
+    const ticksWindow = Math.max(0, secondsUntilImpact * TICKS_PER_SECOND);
+
     let total = 0;
-    const coveredTiles = new Set();
+    const reachable = new Set();
     for (const sam of defenders) {
-      total += estimateSamShotsInWindow(game, sam, ticksWindow);
-      const samTile = getUnitTile(sam);
-      if (samTile === null) continue;
-      const range = getSamRange(game, getUnitLevel(sam));
-      const rangeSq = range * range;
-      for (const tile of targetTiles) {
-        if (getDistanceSquared(game, samTile, tile) <= rangeSq) coveredTiles.add(tile);
+      // Every feasible launch moment for every nuke this SAM can engage.
+      const opps = [];
+      for (let n = 0; n < usableNavs.length; n++) {
+        const offsets = samEngagementOffsets(game, sam, usableNavs[n], missileSpeed);
+        if (offsets.length === 0) continue;
+        opps.push(...offsets);
+        if (usableNavs[n].targetTile !== null) reachable.add(usableNavs[n].targetTile);
+      }
+      if (opps.length === 0) continue;
+      opps.sort((a, b) => a - b);
+
+      // Shot slots: free tubes can fire now and again every cooldown; queued
+      // tubes join the cycle once their reload completes.
+      const lvl = getUnitLevel(sam);
+      const queue = getMissileTimerQueue(sam).slice().sort((a, b) => a - b);
+      const slots = [];
+      const free = Math.max(0, lvl - queue.length);
+      for (let f = 0; f < free; f++) {
+        for (let t = 0; t <= ticksWindow; t += cd) slots.push(t + f);
+      }
+      for (const launched of queue) {
+        const rem = Math.max(0, cd - (Number.isFinite(tick) ? tick - launched : cd));
+        for (let t = rem; t <= ticksWindow; t += cd) slots.push(t);
+      }
+      slots.sort((a, b) => a - b);
+
+      // Greedy match: each slot serves the earliest required launch moment it
+      // is ready in time for (slot time must be at or before that moment — a
+      // ready tube simply waits; the engine never fires late).
+      let oi = 0;
+      for (const s of slots) {
+        while (oi < opps.length && opps[oi] < s) oi++;
+        if (oi >= opps.length) break;
+        total++;
+        oi++;
       }
     }
-    return { total, samCount: defenders.length, covered: coveredTiles.size };
+    return { total, samCount: defenders.length, covered: reachable.size };
   }
 
   function collectIncomingNukes(game) {
@@ -1686,11 +1890,12 @@
 
         let group = incoming.get(typeName);
         if (!group) {
-          group = { count: 0, ticksArr: [], tiles: [] };
+          group = { count: 0, ticksArr: [], tiles: [], navs: [] };
           incoming.set(typeName, group);
         }
         group.count++;
         group.tiles.push(targetTile);
+        group.navs.push(getNukeNav(game, unit));
 
         const ticksRemaining = getRemainingImpactTicksForAlert(unit, game);
         if (ticksRemaining !== null) {
@@ -1710,7 +1915,7 @@
         // Carrier: no SAM can stop it; it splits into warheads instead.
         samStatus = { carrier: true };
       } else if (group.tiles.length > 0) {
-        const cap = computeSamDefenseForAlert(game, group.tiles, secondsMin);
+        const cap = computeSamDefenseForAlert(game, group, secondsMin);
         if (cap !== null) {
           samStatus = {
             shots: cap.total,
@@ -1828,8 +2033,8 @@
       } else {
         samEl.classList.add("of-nuke-tools-alert-sam--warn");
         if (row.nukeType === MIRV_WARHEAD_TYPE) {
-          const inRange = covered ?? samCount;
-          samEl.textContent = `⚠ ${shots}/${row.count} intercepts · ${inRange}/${row.count} in range (${samCount} SAM${samCount !== 1 ? "s" : ""})`;
+          const engageable = covered ?? samCount;
+          samEl.textContent = `⚠ ${shots}/${row.count} intercepts · ${engageable}/${row.count} reachable (${samCount} SAM${samCount !== 1 ? "s" : ""})`;
         } else {
           samEl.textContent = `⚠ ${shots}/${row.count} intercepts (${samCount} SAM${samCount !== 1 ? "s" : ""})`;
         }
@@ -1877,7 +2082,14 @@
     if (now - lastAlertScanAt >= NUKE_SCAN_MS) {
       try {
         const newData = collectIncomingNukes(context.game);
-        const structKey = JSON.stringify(newData.map(r => r.nukeType + "|" + r.count));
+        // Order-independent signature: rows re-sort by remaining time every
+        // scan, so a positional key would rebuild the panel whenever two
+        // rows swap order.
+        const counts = new Map();
+        for (const r of newData) counts.set(r.nukeType, r.count);
+        const structKey = [...counts.keys()].sort()
+          .map(t => `${t}|${counts.get(t)}`)
+          .join(",");
         const newNukeTypes = new Set(newData.map(r => r.nukeType));
 
         if (structKey !== prevAlertData) {
@@ -1901,7 +2113,7 @@
           }
           prevAlertData = structKey;
           panel.replaceChildren();
-          currentAlertRows = [];
+          currentAlertRows.clear();
 
           if (newData.length === 0) {
             const empty = document.createElement("div");
@@ -1912,7 +2124,7 @@
             for (const rowData of newData) {
               const rowObj = createAlertRow(rowData);
               panel.appendChild(rowObj.el);
-              currentAlertRows.push(rowObj);
+              currentAlertRows.set(rowData.nukeType, rowObj);
             }
           }
         } else {
@@ -1922,9 +2134,8 @@
           if (newData.length === 0) {
             // nothing
           } else {
-            for (let i = 0; i < newData.length; i++) {
-              const rowData = newData[i];
-              const rowObj = currentAlertRows[i];
+            for (const rowData of newData) {
+              const rowObj = currentAlertRows.get(rowData.nukeType);
               if (rowObj) {
                 updateAlertRow(rowObj.el, rowData, rowObj.timerValueEl, rowObj.samEl);
               }
@@ -2065,6 +2276,18 @@
     return counts;
   }
 
+  function addActivityRow(panel, icon, label, count) {
+    const row = document.createElement("div");
+    row.className = "activity-row";
+    const labelEl = document.createElement("span");
+    labelEl.textContent = `${icon} ${label}`;
+    const countEl = document.createElement("span");
+    countEl.className = "activity-count";
+    countEl.textContent = count;
+    row.append(labelEl, countEl);
+    panel.appendChild(row);
+  }
+
   function updateGlobalActivityPanel(game) {
     if (!game) {
       if (globalActivityPanelVisible) clearGlobalActivityPanel();
@@ -2077,7 +2300,7 @@
     const globalCounts = getGlobalNukeCounts(game);
     const totalGlobal = globalCounts.atom + globalCounts.hydrogen + globalCounts.mirv + globalCounts.warhead;
 
-    panel.replaceChildren();
+    panel.textContent = "";
 
     if (totalGlobal === 0) {
       const empty = document.createElement("div");
@@ -2085,42 +2308,28 @@
       empty.textContent = "No nukes in airspace";
       panel.appendChild(empty);
     } else {
-      const rows = [
-        ["☢ Atom", globalCounts.atom],
-        ["💣 Hydro", globalCounts.hydrogen],
-        ["🚀 MIRV", globalCounts.mirv],
-      ];
-      if (globalCounts.warhead > 0) {
-        rows.push(["💥 Warheads", globalCounts.warhead]);
-      }
-      for (const [label, count] of rows) {
-        const row = document.createElement("div");
-        row.className = "activity-row";
-        const labelSpan = document.createElement("span");
-        labelSpan.textContent = label;
-        const countSpan = document.createElement("span");
-        countSpan.className = "activity-count";
-        countSpan.textContent = String(count);
-        row.append(labelSpan, countSpan);
-        panel.appendChild(row);
-      }
+      addActivityRow(panel, "☢", "Atom", globalCounts.atom);
+      addActivityRow(panel, "💣", "Hydro", globalCounts.hydrogen);
+      addActivityRow(panel, "🚀", "MIRV", globalCounts.mirv);
+      if (globalCounts.warhead > 0) addActivityRow(panel, "💥", "Warheads", globalCounts.warhead);
     }
 
     if (settings.personalNukeTracker) {
       const personalCounts = getPersonalNukeCounts(game);
-      const personalRow = document.createElement("div");
-      personalRow.className = "personal-row";
+      const totalPersonal = personalCounts.atom + personalCounts.hydrogen + personalCounts.mirv + personalCounts.warhead;
+      const pRow = document.createElement("div");
+      pRow.className = "personal-row";
       if (totalGlobal === 0) {
-        personalRow.textContent = "Your nukes: 0";
+        pRow.textContent = "Your nukes: 0";
       } else {
         const parts = [];
         if (personalCounts.atom > 0) parts.push(`☢ ${personalCounts.atom}`);
         if (personalCounts.hydrogen > 0) parts.push(`💣 ${personalCounts.hydrogen}`);
         if (personalCounts.mirv > 0) parts.push(`🚀 ${personalCounts.mirv}`);
         if (personalCounts.warhead > 0) parts.push(`💥 ${personalCounts.warhead}`);
-        personalRow.textContent = `Your nukes: ${parts.length > 0 ? parts.join("  ") : "0"}`;
+        pRow.textContent = `Your nukes: ${parts.length > 0 ? parts.join("  ") : "0"}`;
       }
-      panel.appendChild(personalRow);
+      panel.appendChild(pRow);
     }
   }
 
@@ -2207,13 +2416,19 @@
     const id = getObjectId(player);
     const cached = nukeCostCache.get(id);
     if (cached && now - cached.at < NUKE_COST_REFRESH_MS) return cached;
-    const fb = { ...NUKE_COST_FALLBACK, at: now };
-    nukeCostCache.set(id, fb);
+    // Keep the last known values while the worker round-trip is in flight —
+    // reseeding with defaults on every refresh made affordability oscillate
+    // between the real MIRV price and the fallback each cycle.
+    const seed = cached
+      ? { atom: cached.atom, hydro: cached.hydro, mirv: cached.mirv, at: now }
+      : { ...NUKE_COST_FALLBACK, at: now };
+    nukeCostCache.set(id, seed);
     const p = callMethod(player, "buildables");
     if (p && typeof p.then === "function") {
       p.then((list) => {
         if (!Array.isArray(list)) return;
-        const c = { ...NUKE_COST_FALLBACK, at: Date.now() };
+        const prev = nukeCostCache.get(id) ?? NUKE_COST_FALLBACK;
+        const c = { atom: prev.atom, hydro: prev.hydro, mirv: prev.mirv, at: Date.now() };
         for (const b of list) {
           const cost = toFiniteNumber(readProperty(b, "cost"), null);
           if (cost === null || cost <= 0) continue;
@@ -2225,7 +2440,7 @@
         nukeCostCache.set(id, c);
       }).catch(() => {});
     }
-    return fb;
+    return seed;
   }
 
   // How many of each nuke type they could fire right now: the smaller of
@@ -2361,10 +2576,15 @@
     enemyNukesObservedOverlay = overlay;
     if (!overlay) return;
     enemyNukesOverlayObserver = new MutationObserver((mutations) => {
+      // Skip only batches caused entirely by our own row; mixed batches must
+      // still trigger so real overlay re-renders aren't swallowed.
+      let foreign = false;
       for (const m of mutations) {
-        // Ignore changes to our own row so updating it doesn't re-trigger us.
-        if (m.target && m.target.id === ENEMY_NUKES_HOVER_ID) return;
+        if (m.target && m.target.id === ENEMY_NUKES_HOVER_ID) continue;
+        foreign = true;
+        break;
       }
+      if (!foreign) return;
       ensureEnemyNukesHover(getGameContext()?.game, overlay);
     });
     enemyNukesOverlayObserver.observe(overlay, { childList: true, subtree: true });
@@ -2564,7 +2784,9 @@
     if (!game || !partner || !me) return null;
     const pid = getPlayerId(partner);
     const perSec =
-      eventRate(shipIncomeEvents, pid) + eventRate(warshipIncomeEvents, pid);
+      eventRate(shipIncomeEvents, pid) +
+      eventRate(warshipIncomeEvents, pid) +
+      eventRate(factoryIncomeEvents, pid);
     let ships = 0;
     const res = getGameUnitsCached(game, TRADE_SHIP_TYPE);
     if (res.available) {
@@ -2582,9 +2804,9 @@
       }
     }
     const blocked =
-      callMethod(me, "canTrade", partner) === false ||
-      callMethod(partner, "canTrade", me) === false;
-    return { perSec, ships, blocked };
+      callMethod(me, "hasEmbargo", partner) === true ||
+      callMethod(partner, "hasEmbargo", me) === true;
+    return { perSec, perMin: perSec * 60, ships, blocked };
   }
 
   function tradeRowClasses(blocked, warn = false) {
@@ -2594,7 +2816,9 @@
     return `${base} bg-slate-900/60 text-emerald-300`;
   }
 
-  // Creates (or updates) one row element inside the overlay card.
+  // Creates (or updates) one row element inside the overlay card. Runs at up
+  // to ~30 fps while hovering, so identical renders are skipped — rewriting
+  // unchanged rows would churn layout and our own MutationObserver for nothing.
   function ensureOverlayRow(card, id, className, title, text) {
     let el = document.getElementById(id);
     if (el && el.parentNode !== card) { el.remove(); el = null; }
@@ -2603,18 +2827,30 @@
       el.id = id;
       card.appendChild(el);
     }
-    el.className = className;
-    el.title = title || "";
-    el.replaceChildren();
-    const span = document.createElement("span");
-    span.className = "flex items-center gap-1";
-    span.textContent = text;
-    el.appendChild(span);
+    if (el.__ofText !== text || el.__ofTitle !== title || el.__ofCls !== className) {
+      el.className = className;
+      el.title = title || "";
+      el.replaceChildren();
+      const span = document.createElement("span");
+      span.className = "flex items-center gap-1";
+      span.textContent = text;
+      el.appendChild(span);
+      el.__ofText = text;
+      el.__ofTitle = title;
+      el.__ofCls = className;
+    }
     return el;
   }
 
   function removeOverlayRow(id) {
     document.getElementById(id)?.remove();
+  }
+
+  // Hover rows for the Player Stats Overlay feature (troop rate + income for
+  // the hovered player).
+  function removeStatsRows() {
+    removeOverlayRow(TROOP_RATE_HOVER_ID);
+    removeOverlayRow(GOLD_INCOME_HOVER_ID);
   }
 
   // Pairs ("theirs" side count, "mine" side count) into a row label.
@@ -2628,6 +2864,7 @@
   function ensureTradePartnerHover(game, overlay) {
     const removeAll = () => {
       for (const id of TRADE_ROW_IDS) removeOverlayRow(id);
+      removeStatsRows();
       lastTradePartnerPlayerKey = null;
       tradePartnerRenderCache = null;
     };
@@ -2639,7 +2876,7 @@
 
     const me = getMyPlayer(game);
     const playerKey = getObjectId(player);
-    const pid = me ? getPlayerId(player) : null;
+    const pid = getPlayerId(player);
     const now = performance.now();
     const due = playerKey !== lastTradePartnerPlayerKey
       ? now - lastTradePartnerScanAt >= TRADE_PARTNER_MIN_SCAN_GAP_MS
@@ -2654,13 +2891,14 @@
         const st = getTradePartnerStats(game, player, me);
         if (st) {
           const rateText = st.perSec > 0 ? `+${formatGold(st.perSec)}/s` : "+0/s";
+          const minText = st.perMin > 0 ? ` · +${formatGold(st.perMin)}/min` : "";
           const shipText = st.ships > 0 ? ` · ${st.ships} ship${st.ships === 1 ? "" : "s"}` : "";
           tradePartnerRenderCache = {
             className: tradeRowClasses(st.blocked),
-            label: st.blocked ? `Trade: stopped` : `Trade: ${rateText}${shipText}`,
+            label: st.blocked ? `Trade: stopped` : `Trade: ${rateText}${minText}${shipText}`,
             title: st.blocked
               ? "Trading with this player is currently stopped — no gold is exchanged."
-              : "Gold income you receive from trade with this player (their ships to your ports, your ships to theirs, and ships your warships captured from them).",
+              : "Gold you receive from trading with this player, per second and per minute: port-to-port trade ships, captured ships your warships bring in, and train stops at each other's cities/ports/factories.",
           };
         }
       }
@@ -2708,6 +2946,62 @@
     } else {
       removeOverlayRow(TRADE_WARSHIPS_HOVER_ID);
     }
+
+    // Player Stats Overlay rows (work regardless of the trade/naval toggles).
+    if (settings.overlayTroopRate) {
+      const rates = computeTroopRateFromFormula(game, player);
+      const text = rates
+        ? `⚔ Growth: +${formatTroops(rates.perSec)}/s · +${formatTroops(rates.perMin)}/min`
+        : "⚔ Growth: sampling…";
+      ensureOverlayRow(
+        card, TROOP_RATE_HOVER_ID, tradeRowClasses(false),
+        "Their natural troop growth, straight from the game's formula — same figure the Troop Rate panel shows for you.",
+        text,
+      );
+    } else {
+      removeOverlayRow(TROOP_RATE_HOVER_ID);
+    }
+    if (settings.overlayGoldIncome) {
+      const rec = otherGoldTrackers.get(pid);
+      const gross = grossRateFromSamples(rec?.samples);
+      let text, title;
+      if (!gross) {
+        text = "💰 Income: sampling…";
+        title = "Measured from their gold changes over the last 60 s.";
+      } else {
+        text = `💰 Income: +${formatGold(gross.perSec)}/s · +${formatGold(gross.perMin)}/min`;
+        // Source split, mirroring the local panel: base from Config, then
+        // detected port/warship/factory payouts scaled to cover whatever the
+        // sampled total earns beyond base.
+        const baseInfo = tryReadDirectIncome(game, player);
+        const basePerSec = baseInfo?.perSec;
+        const hasBase = Number.isFinite(basePerSec) && basePerSec > 0;
+        const segs = [];
+        if (hasBase) segs.push(`base ${formatGold(basePerSec)}`);
+        const split = otherSplitEvents.get(pid);
+        if (split) {
+          let ports = eventRate(split.ports);
+          let war = eventRate(split.warships);
+          let fac = eventRate(split.factories);
+          const extra = hasBase ? gross.perSec - basePerSec : 0;
+          const sum = ports + war + fac;
+          if (extra > 0 && sum > 0) {
+            const scale = extra / sum;
+            ports *= scale;
+            war *= scale;
+            fac *= scale;
+          }
+          if (ports >= 1) segs.push(`⚓ ${formatGold(ports)}/s`);
+          if (war >= 1) segs.push(`💥 ${formatGold(war)}/s`);
+          if (fac >= 1) segs.push(`🏭 ${formatGold(fac)}/s`);
+        }
+        if (segs.length > 0) text += ` — ${segs.join(" · ")}`;
+        title = "Their measured gold income over the last 60 s (same model as your Gold Income panel). Breakdown: base = passive rate from the lobby settings · ⚓ ports = trade ships that arrived at their ports or theirs arriving elsewhere · 💥 warships = trade ships their warships captured and brought in · 🏭 factories = train stops that paid them (their trains stopping anywhere, plus other trains stopping at their cities/ports). Estimated from detected payouts.";
+      }
+      ensureOverlayRow(card, GOLD_INCOME_HOVER_ID, tradeRowClasses(false), title, text);
+    } else {
+      removeOverlayRow(GOLD_INCOME_HOVER_ID);
+    }
   }
 
   function setupTradePartnerObserver(game) {
@@ -2720,10 +3014,15 @@
     tradePartnerObservedOverlay = overlay;
     if (!overlay) return;
     tradePartnerOverlayObserver = new MutationObserver((mutations) => {
+      // Skip only batches caused entirely by our own rows; mixed batches must
+      // still trigger so real overlay re-renders aren't swallowed.
+      let foreign = false;
       for (const m of mutations) {
-        // Ignore changes to our own rows so updating them doesn't re-trigger us.
-        if (m.target && TRADE_ROW_IDS.has(m.target.id)) return;
+        if (m.target && TRADE_ROW_IDS.has(m.target.id)) continue;
+        foreign = true;
+        break;
       }
+      if (!foreign) return;
       ensureTradePartnerHover(getGameContext()?.game, overlay);
     });
     tradePartnerOverlayObserver.observe(overlay, { childList: true, subtree: true });
@@ -2746,16 +3045,26 @@
   }
 
   function syncTradePartnerIncome() {
-    if (!anyTradePartnerFeature()) {
+    if (!anyTradePartnerFeature() && !settings.overlayTroopRate && !settings.overlayGoldIncome) {
       teardownTradePartnerHover();
+      removeStatsRows();
       return;
     }
     const context = getGameContext();
     if (!context?.game || !isGameActive(context.game)) {
       teardownTradePartnerHover();
+      removeStatsRows();
     } else {
+      if (settings.overlayGoldIncome) {
+        // Drive the shared ship/train scanners so per-player split buckets
+        // stay populated even with the local gold panel switched off.
+        const localPanelOn = settings.goldPerSecond || settings.goldPerMinute;
+        const meNow = getMyPlayer(context.game);
+        if (!localPanelOn && meNow) measureSourceSplit(context.game, meNow);
+        maybeSampleOtherGold(context.game);
+      }
       const me = getMyPlayer(context.game);
-      if (me) updateNavalEvents(context.game, me);
+      if (me && anyTradePartnerFeature()) updateNavalEvents(context.game, me);
       setupTradePartnerObserver(context.game);
       ensureTradePartnerHover(context.game, document.querySelector("player-info-overlay"));
     }
@@ -2785,6 +3094,19 @@
     ensureMasterLoop();
   }
 
+  // === Player stats overlay (troop rate + gold income for other players) ===
+  function setOverlayTroopRateEnabled(enabled) {
+    settings.overlayTroopRate = !!enabled;
+    if (!settings.overlayTroopRate) removeOverlayRow(TROOP_RATE_HOVER_ID);
+    ensureMasterLoop();
+  }
+
+  function setOverlayGoldIncomeEnabled(enabled) {
+    settings.overlayGoldIncome = !!enabled;
+    if (!settings.overlayGoldIncome) removeOverlayRow(GOLD_INCOME_HOVER_ID);
+    ensureMasterLoop();
+  }
+
   // === Gold income panel (draggable) ===
   // The game is canvas-rendered, so there's nothing to hook next to the gold
   // counter — hence a draggable fixed panel (position kept in localStorage).
@@ -2805,9 +3127,6 @@
   let goldDragOffsetX = 0;
   let goldDragOffsetY = 0;
 
-  // Keep a saved panel on-screen. A drag only ever stores in-viewport coords,
-  // but window/monitor size changes can still strand the panel off the visible
-  // area where it's impossible to see or grab again — so clamp on load too.
   function clampPanelPos(x, y) {
     const vw = window.innerWidth, vh = window.innerHeight;
     return {
@@ -2819,7 +3138,7 @@
   function loadGoldPanelPos() {
     try {
       const p = JSON.parse(localStorage.getItem(GOLD_POS_KEY) || "null");
-      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) return clampPanelPos(p.x, p.y);
+      if (p && typeof p.x === "number" && typeof p.y === "number") return clampPanelPos(p.x, p.y);
     } catch (_) {}
     return { x: 16, y: 100 }; // default: top-left area
   }
@@ -2915,7 +3234,6 @@
     }
     goldIncomePanelVisible = false;
     goldSampleHistory      = [];
-    lastDisplayedRate      = null;
     lastGoldSampleAt       = 0;
     lastAliveCount         = 0;
     lootHoldUntil          = 0;
@@ -2963,6 +3281,19 @@
         }
       }
       lastAliveCount = alive;
+    }
+    // Exact conquest-loot signal: frame data exposes this tick's conquest
+    // payouts for your own kills. Their presence flags nearby samples so the
+    // lump gold never inflates the average (the alive-count guard above
+    // stays as a fallback).
+    const fd = callMethod(game, "frameData") ?? readProperty(game, "frameData");
+    const fev = fd ? readProperty(fd, "events") : null;
+    const conquests = fev ? readProperty(fev, "conquestEvents") : null;
+    if (Array.isArray(conquests) && conquests.length > 0) {
+      lootHoldUntil = Math.max(lootHoldUntil, now + GOLD_LOOT_HOLD_MS);
+      for (const s of goldSampleHistory) {
+        if (now - s.ts < GOLD_LOOT_HOLD_MS) s.lootHold = true;
+      }
     }
     const lootHold = now < lootHoldUntil;
     goldSampleHistory.push({ gold: g, ts: now, lootHold });
@@ -3065,7 +3396,9 @@
     return best;
   }
 
-  // Map of every City/Port station tile -> unit, built once per sample.
+  // Map of every City/Port station tile -> { unit, x, y }, built once per
+  // sample. Coordinates are cached here so the per-engine proximity scan is
+  // pure arithmetic instead of two game method calls per candidate.
   function buildStationMap(game) {
     const map = new Map();
     for (const type of [CITY_TYPE, PORT_TYPE]) {
@@ -3073,7 +3406,10 @@
       if (!res.available) continue;
       for (const u of res.units) {
         const tile = getUnitTile(u);
-        if (tile !== null) map.set(tile, u);
+        if (tile === null) continue;
+        const x = toFiniteNumber(callMethod(game, "x", tile));
+        const y = toFiniteNumber(callMethod(game, "y", tile));
+        map.set(tile, { unit: u, x, y });
       }
     }
     return map;
@@ -3081,10 +3417,17 @@
 
   function findStationNear(game, stationMap, tile) {
     if (!Number.isFinite(tile)) return null;
-    if (stationMap.has(tile)) return stationMap.get(tile);
-    for (const [st, u] of stationMap) {
-      const d = tileDistance(game, st, tile);
-      if (d !== null && d <= TRAIN_STATION_RADIUS) return u;
+    const hit = stationMap.get(tile);
+    if (hit) return hit.unit;
+    const ax = toFiniteNumber(callMethod(game, "x", tile));
+    const ay = toFiniteNumber(callMethod(game, "y", tile));
+    if (!Number.isFinite(ax) || !Number.isFinite(ay)) return null;
+    const rSq = TRAIN_STATION_RADIUS * TRAIN_STATION_RADIUS;
+    for (const st of stationMap.values()) {
+      if (!Number.isFinite(st.x) || !Number.isFinite(st.y)) continue;
+      const dx = st.x - ax;
+      const dy = st.y - ay;
+      if (dx * dx + dy * dy <= rSq) return st.unit;
     }
     return null;
   }
@@ -3094,6 +3437,26 @@
     while (shipIncomeEvents.length     && shipIncomeEvents[0].ts     < cutoff) shipIncomeEvents.shift();
     while (warshipIncomeEvents.length  && warshipIncomeEvents[0].ts  < cutoff) warshipIncomeEvents.shift();
     while (factoryIncomeEvents.length  && factoryIncomeEvents[0].ts  < cutoff) factoryIncomeEvents.shift();
+    for (const [pid, rec] of otherSplitEvents) {
+      while (rec.ports.length     && rec.ports[0].ts     < cutoff) rec.ports.shift();
+      while (rec.warships.length  && rec.warships[0].ts  < cutoff) rec.warships.shift();
+      while (rec.factories.length && rec.factories[0].ts < cutoff) rec.factories.shift();
+      if (!rec.ports.length && !rec.warships.length && !rec.factories.length) {
+        otherSplitEvents.delete(pid);
+      }
+    }
+  }
+
+  // Credits one payout to a recipient's per-player split bucket. The engine
+  // pays each recipient the full gold, so no division here.
+  function recordOtherSplitEvent(pid, bucket, gold, ts) {
+    if (!pid) return;
+    let rec = otherSplitEvents.get(pid);
+    if (!rec) {
+      rec = { ports: [], warships: [], factories: [] };
+      otherSplitEvents.set(pid, rec);
+    }
+    rec[bucket].push({ gold, ts });
   }
 
   // Payouts divided by the time since the oldest. Pass a `pid` to count only
@@ -3112,6 +3475,39 @@
     if (oldest === null) return 0;
     const spanSec = (now - oldest) / 1000;
     return spanSec > 0 ? total / spanSec : 0;
+  }
+
+  // Gold sampling for every alive player, feeding the hover overlay's income
+  // row. Same model as the local panel: positive deltas averaged over the
+  // window, sampled at a lower rate (250ms) since it runs for all players.
+  function maybeSampleOtherGold(game) {
+    const now = performance.now();
+    if (!settings.overlayGoldIncome) return;
+    if (now - lastOtherGoldSampleAt < 250) return;
+    lastOtherGoldSampleAt = now;
+    for (const p of getPlayerViews(game)) {
+      if (!p || callMethod(p, "isAlive") !== true) continue;
+      const g = getPlayerGold(p);
+      if (!Number.isFinite(g)) continue;
+      const pid = getPlayerId(p);
+      let rec = otherGoldTrackers.get(pid);
+      if (!rec) {
+        rec = { samples: [] };
+        otherGoldTrackers.set(pid, rec);
+      }
+      rec.samples.push({ gold: g, ts: now });
+      const cutoff = now - GOLD_SAMPLE_WINDOW_MS;
+      while (rec.samples.length > 2 && rec.samples[1].ts < cutoff) {
+        rec.samples.shift();
+      }
+    }
+    // Drop trackers for players that stopped being sampled (dead/gone).
+    for (const [pid, rec] of otherGoldTrackers) {
+      const newest = rec.samples[rec.samples.length - 1];
+      if (!newest || now - newest.ts > GOLD_SAMPLE_WINDOW_MS * 2) {
+        otherGoldTrackers.delete(pid);
+      }
+    }
   }
 
   // Trade-ship tracker. On arrival (despawn on the destination port, or seen
@@ -3139,10 +3535,24 @@
       const owner = getUnitOwner(u) ?? null;
       let t = shipTrackers.get(id);
       if (!t) {
-        t = { dist: 0, lastTile: null, firstTile: tile, owner: null, firstOwner: null, seenAt: now, dstId: null, dstTile: null, dstOwner: null };
+        t = { dist: 0, lastTile: null, firstTile: tile, owner: null, firstOwner: null, seenAt: now, dstId: null, dstTile: null, dstOwner: null, planId: null, planIdx: NaN };
         shipTrackers.set(id, t);
       }
-      if (t.lastTile !== null && tile !== null) {
+      // Prefer the ship's motion plan for exact step counts — the engine's
+      // tilesTraveled walks the water path one tile per tick, and the plan
+      // cursor advances one index per tick. Manhattan between snapshots is
+      // only the fallback when no plan is live.
+      const numId = Number(id);
+      const prog = getMotionPlanProgress(game, numId);
+      if (prog) {
+        if (t.planId === prog.rec.planId && Number.isFinite(t.planIdx)) {
+          t.dist += Math.max(0, prog.idx - t.planIdx);
+        } else {
+          t.dist += prog.idx;
+        }
+        t.planId = prog.rec.planId;
+        t.planIdx = prog.idx;
+      } else if (t.lastTile !== null && tile !== null) {
         const d = stepLength(game, t.lastTile, tile);
         if (d > 0) t.dist += d;
       }
@@ -3180,29 +3590,34 @@
           const p = findUnitNear(game, PORT_TYPE, t.lastTile, 3);
           if (p) { dstTile = getUnitTile(p); dstOwner = getUnitOwner(p); dstAlive = true; }
         }
-        if (dstTile !== null && dstAlive) {
-          // A captured ship pays only its current (capturing) owner.
+        if (dstTile !== null && dstAlive && cfg) {
+          // Engine payout rules (TradeShipExecution.complete): a normal
+          // arrival pays the FULL gold to both the source-port owner and the
+          // destination-port owner; a captured ship pays only its capturer.
           const captured = t.firstOwner && t.owner && !isSamePlayer(t.firstOwner, t.owner);
-          const paysMe = captured
-            ? Boolean(t.owner && isSamePlayer(t.owner, me))
-            : Boolean(t.owner && isSamePlayer(t.owner, me)) ||
-              Boolean(dstOwner && isSamePlayer(dstOwner, me));
-          if (paysMe && cfg) {
-            let dist = t.dist;
-            if (t.firstTile !== null && dstTile !== null) {
-              const straight = tileDistance(game, t.firstTile, dstTile);
-              if (straight !== null && straight > dist) dist = straight;
-            }
-            const gold = toFiniteNumber(callMethod(cfg, "tradeShipGold", dist, t.owner || me), 0);
-            if (gold > 0) {
-              // Tag the event with the other party so the hover overlay can sum
-              // per-partner income: original owner if captured, otherwise the
-              // ship's owner if we're the destination, else the port owner.
-              const partner = captured
-                ? t.firstOwner
-                : (t.owner && isSamePlayer(t.owner, me) ? dstOwner : t.owner);
-              const pid = partner ? getPlayerId(partner) : null;
-              (captured ? warshipIncomeEvents : shipIncomeEvents).push({ gold, ts: now, pid });
+          let dist = t.dist;
+          if (t.firstTile !== null && dstTile !== null) {
+            const straight = tileDistance(game, t.firstTile, dstTile);
+            if (straight !== null && straight > dist) dist = straight;
+          }
+          const gold = toFiniteNumber(callMethod(cfg, "tradeShipGold", dist, t.owner || me), 0);
+          if (gold > 0) {
+            const bucket = captured ? "warships" : "ports";
+            const recipients = captured
+              ? [t.owner]
+              : [...new Set([t.owner, dstOwner].filter(Boolean))];
+            for (const rec of recipients) {
+              recordOtherSplitEvent(getPlayerId(rec), bucket, gold, now);
+              // Local panel / trade-row feed stays byte-compatible with the
+              // previous behavior: one event when a recipient is me, tagged
+              // with the other party.
+              if (rec && isSamePlayer(rec, me)) {
+                const partner = captured
+                  ? t.firstOwner
+                  : (recipients.find(r => r && !isSamePlayer(r, me)) ?? null);
+                const pid = partner ? getPlayerId(partner) : null;
+                (captured ? warshipIncomeEvents : shipIncomeEvents).push({ gold, ts: now, pid });
+              }
             }
           }
         }
@@ -3226,9 +3641,9 @@
       if (id === null) continue;
       seen.add(id);
       const ttype = callMethod(u, "trainType");
-      // The engine drives the train; carriages just follow. Some builds don't
-      // expose trainType, so unknown units count as engines.
-      if (ttype !== undefined && ttype !== null && ttype !== TRAIN_ENGINE_TYPE) continue;
+      // Engines pull; carriages just follow. Some builds don't expose
+      // trainType, so unknown units count as engines.
+      if (ttype === TRAIN_CARRIAGE_TYPE) continue;
       const tile = getUnitTile(u);
       const owner = getUnitOwner(u) ?? null;
       const t = trainTrackers.get(id) || { stops: 0, lastStopKey: null, lastTile: null, owner: null };
@@ -3256,13 +3671,26 @@
           const rel = trainRel(e.t.owner, stationOwner);
           const stops = e.t.stops; // before increment, matching the engine
           const same = e.t.owner && stationOwner && isSamePlayer(e.t.owner, stationOwner);
-          const paysMeTrain   = Boolean(e.t.owner && isSamePlayer(e.t.owner, me));
-          const paysMeStation = Boolean(stationOwner && isSamePlayer(stationOwner, me)) && !same;
-          if ((paysMeTrain || paysMeStation) && cfg) {
-            // A station owner is paid using the TRAIN owner's gold multiplier.
-            const goldFor = paysMeTrain ? me : e.t.owner;
-            const gold = toFiniteNumber(callMethod(cfg, "trainGold", rel, stops, goldFor), 0);
-            if (gold > 0) factoryIncomeEvents.push({ gold, ts: now });
+          if (cfg && e.t.owner) {
+            // Engine payout rules (TrainStation.onStop): the TRAIN owner is
+            // always paid, and a DIFFERENT station owner is paid the same
+            // full amount — both valued with the train owner's multiplier.
+            const gold = toFiniteNumber(callMethod(cfg, "trainGold", rel, stops, e.t.owner), 0);
+            if (gold > 0) {
+              const recipients = same
+                ? [e.t.owner]
+                : [e.t.owner, stationOwner].filter(Boolean);
+              for (const rec of recipients) {
+                recordOtherSplitEvent(getPlayerId(rec), "factories", gold, now);
+                if (isSamePlayer(rec, me)) {
+                  // Tag with the other party so per-partner trade income can
+                  // include train/factory trade. Self-trade gets pid null.
+                  const partner = recipients.find(r => r && !isSamePlayer(r, me)) ?? null;
+                  const pid = partner ? getPlayerId(partner) : null;
+                  factoryIncomeEvents.push({ gold, ts: now, pid });
+                }
+              }
+            }
           }
           e.t.stops++;
         }
@@ -3299,26 +3727,30 @@
     }
   }
 
-  // Gross rate: average of positive gold gains over the window (base + ports +
-  // factories). `lootHold` steps are conquest loot and get skipped; negative
-  // deltas are spending and ignored.
-  function computeGoldGrossRate() {
-    if (goldSampleHistory.length < 15) return null;
-    const first = goldSampleHistory[0];
-    const last  = goldSampleHistory[goldSampleHistory.length - 1];
+  // Gross rate: average of positive gold gains over the window. `lootHold`
+  // steps are conquest loot and get skipped; negative deltas are spending and
+  // ignored. Shared by the local panel and the hover overlay's income row.
+  function grossRateFromSamples(samples) {
+    if (!samples || samples.length < 15) return null;
+    const first = samples[0];
+    const last  = samples[samples.length - 1];
     const elapsedSec = (last.ts - first.ts) / 1000;
     if (elapsedSec < 2) return null;
     let totalGain = 0;
     let steps = 0;
-    for (let i = 1; i < goldSampleHistory.length; i++) {
-      // Skip steps that may contain conquest loot (alive count dropped then).
-      if (goldSampleHistory[i].lootHold) continue;
-      const dg = goldSampleHistory[i].gold - goldSampleHistory[i - 1].gold;
+    for (let i = 1; i < samples.length; i++) {
+      // Skip steps that may contain conquest loot.
+      if (samples[i].lootHold) continue;
+      const dg = samples[i].gold - samples[i - 1].gold;
       if (dg > 0) { totalGain += dg; steps++; }
     }
     if (steps < 8) return null;
     const grossPerSec = totalGain / elapsedSec;
     return { perSec: grossPerSec, perMin: grossPerSec * 60 };
+  }
+
+  function computeGoldGrossRate() {
+    return grossRateFromSamples(goldSampleHistory);
   }
 
   function computeGoldRates(game) {
@@ -3508,10 +3940,10 @@
     }
     try {
       const pos = JSON.parse(localStorage.getItem(TROOP_POS_KEY) || "null");
-      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
-        const c = clampPanelPos(pos.x, pos.y);
-        troopPanel.style.left = c.x + "px";
-        troopPanel.style.top  = c.y + "px";
+      if (pos && typeof pos.x === "number") {
+        const safe = clampPanelPos(pos.x, pos.y);
+        troopPanel.style.left = safe.x + "px";
+        troopPanel.style.top  = safe.y + "px";
       } else {
         troopPanel.style.left = "16px";
         troopPanel.style.top  = "160px"; // default below gold panel
@@ -3670,10 +4102,211 @@
     }
   }
 
-  function setTroopRateEnabled(on) {
-    settings.troopPerSecond = on ? settings.troopPerSecond : false;
-    settings.troopPerMinute = on ? settings.troopPerMinute : false;
-    if (!on) clearTroopRateDisplay();
+  // === Build progress labels ===
+  // Structures under construction get a small label under their build bar:
+  // percentage done and remaining seconds. Progress is derived from the
+  // unit's construction start tick and Config's per-type duration.
+  const BUILD_SCAN_MS = 100;
+  // StructurePass collapses icons to dots below this zoom
+  // (render-settings.json: structure.dotsZoomThreshold) — hide our labels
+  // there too, since there's no icon or progress pill to anchor them to.
+  const BUILD_LABEL_MIN_ZOOM = 1.2;
+  const STRUCTURE_TYPE_LIST = [
+    "City", "Factory", "Port", "Defense Post", "Missile Silo", "SAM Launcher",
+  ];
+  // Fallback durations (ticks) when Config.unitInfo isn't readable. Matches
+  // Config: City/Factory 2s, Port/DefensePost 5s, Silo 10s, SAM 30s.
+  const DEFAULT_BUILD_TICKS = {
+    "City": 20,
+    "Factory": 20,
+    "Port": 50,
+    "Defense Post": 50,
+    "Missile Silo": 100,
+    "SAM Launcher": 300,
+  };
+  let buildScanCache = [];
+  let lastBuildScanAt = 0;
+  let buildLayerGame = null;
+  const buildEntries = new Map(); // unitId -> { label, pct, sec, text, hidden, x, y }
+
+  // Opt-in diagnostics: set localStorage "ofplus-debug" = "1" and reload.
+  const OF_DEBUG = (() => {
+    try { return localStorage.getItem("ofplus-debug") === "1"; } catch (_) { return false; }
+  })();
+  let dbgLastAt = 0;
+  function debugBuild(info) {
+    if (!OF_DEBUG) return;
+    const n = performance.now();
+    if (n - dbgLastAt < 2000) return;
+    dbgLastAt = n;
+    try { console.log("[Openfront+ build-debug]", info); } catch (_) {}
+  }
+
+  function ensureBuildStyle() {
+    appendStyle(BUILD_STYLE_ID, `
+      #${BUILD_LAYER_ID} { position: fixed; inset: 0; z-index: 2147483644; pointer-events: none; }
+      #${BUILD_LAYER_ID} .of-bp-label {
+        position: fixed; left: 0; top: 0;
+        display: flex; flex-direction: column; align-items: center; gap: 1px;
+        padding: 2px 6px; border-radius: 6px;
+        background: rgba(7,12,18,0.85); border: 1px solid rgba(148,163,184,0.35);
+        font: 700 10px/1.15 system-ui, sans-serif; color: #e2e8f0;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.9); white-space: nowrap;
+        transform: translate3d(var(--bp-x), var(--bp-y), 0) translateX(-50%);
+        will-change: transform;
+      }
+      /* display:flex above overrides the UA's [hidden] rule — restate it */
+      #${BUILD_LAYER_ID} .of-bp-label[hidden] { display: none; }
+      #${BUILD_LAYER_ID} .of-bp-pct { font-weight: 900; font-size: 11px; color: #fde047; }
+      #${BUILD_LAYER_ID} .of-bp-sec { font-size: 9px; color: #cbd5e1; }
+    `);
+  }
+
+  function ensureBuildLayer() {
+    ensureBuildStyle();
+    let l = document.getElementById(BUILD_LAYER_ID);
+    if (!l) {
+      l = document.createElement("div");
+      l.id = BUILD_LAYER_ID;
+      l.setAttribute("aria-hidden", "true");
+      (document.body || document.documentElement).appendChild(l);
+    }
+    return l;
+  }
+
+  function clearBuildEntries() {
+    document.getElementById(BUILD_LAYER_ID)?.replaceChildren();
+    buildEntries.clear();
+    buildScanCache = [];
+  }
+
+  function constructionDurationTicks(game, type) {
+    const cfg = callMethod(game, "config") ?? readProperty(game, "config") ?? null;
+    const info = cfg ? callMethod(cfg, "unitInfo", type) : null;
+    const d = toFiniteNumber(callMethod(info, "constructionDuration"), null);
+    // d === 0 means instantBuild — keep it distinct from "unreadable".
+    if (d !== null) return d > 0 ? d : 0;
+    return DEFAULT_BUILD_TICKS[type] ?? null;
+  }
+
+  function collectBuildingUnits(game, tick) {
+    const out = [];
+    for (const type of STRUCTURE_TYPE_LIST) {
+      const res = getGameUnitsCached(game, type);
+      if (!res.available) continue;
+      const duration = constructionDurationTicks(game, type);
+      if (!duration || duration <= 0) continue; // instantBuild or unknown
+      for (const u of res.units) {
+        if (callMethod(u, "isUnderConstruction") !== true) continue;
+        const st = readProperty(u, "state");
+        let startTick = toFiniteNumber(readProperty(st, "constructionStartTick"), null);
+        if (startTick === null) startTick = toFiniteNumber(callMethod(u, "createdAt"), tick);
+        if (startTick === null || !Number.isFinite(tick)) continue;
+        const tile = getUnitTile(u);
+        if (tile === null) continue;
+        const world = tileToWorld(game, tile);
+        if (!world) continue;
+        out.push({
+          id: String(toFiniteNumber(callMethod(u, "id"), getUnitId(u))),
+          world,
+          startTick,
+          duration,
+        });
+      }
+    }
+    return out;
+  }
+
+  function pruneBuildEntries() {
+    const active = new Set(buildScanCache.map(i => i.id));
+    for (const [id, entry] of buildEntries) {
+      if (!active.has(id)) { entry.label.remove(); buildEntries.delete(id); }
+    }
+  }
+
+  function syncBuildProgress() {
+    if (!settings.buildProgress) {
+      debugBuild({ stage: "disabled" });
+      clearBuildEntries();
+      document.getElementById(BUILD_LAYER_ID)?.remove();
+      return;
+    }
+    const ctx = getGameContext();
+    if (!ctx?.game || !ctx?.transform || !isGameActive(ctx.game)) {
+      debugBuild({ stage: "no-active-game", hasCtx: Boolean(ctx), hasTransform: Boolean(ctx?.transform) });
+      clearBuildEntries();
+      return;
+    }
+    const tScale = Number.isFinite(ctx.transform.scale) ? ctx.transform.scale : 1.8;
+    if (!(tScale > BUILD_LABEL_MIN_ZOOM)) {
+      // Zoomed past the game's dot-LOD — icons (and their progress pills)
+      // aren't drawn, so floating numbers would anchor to nothing.
+      debugBuild({ stage: "zoomed-out", zoom: tScale });
+      clearBuildEntries();
+      return;
+    }
+    if (buildLayerGame !== ctx.game) {
+      buildLayerGame = ctx.game;
+      clearBuildEntries();
+    }
+    const now = performance.now();
+    const tick = getGameTick(ctx.game);
+    if (!Number.isFinite(tick)) return;
+    if (now - lastBuildScanAt >= BUILD_SCAN_MS) {
+      lastBuildScanAt = now;
+      buildScanCache = collectBuildingUnits(ctx.game, tick);
+      pruneBuildEntries();
+    }
+    debugBuild({ stage: "scanning", tick, found: buildScanCache.length, entries: buildEntries.size });
+    const layer = ensureBuildLayer();
+    // Fixed clearance below the game's progress pill.
+    const yOffset = 32;
+    for (const item of buildScanCache) {
+      const screen = worldToScreen(ctx.transform, item.world);
+      const visible = Number.isFinite(screen?.x) && Number.isFinite(screen?.y) &&
+        screen.x >= -40 && screen.y >= -40 &&
+        screen.x <= window.innerWidth + 40 && screen.y <= window.innerHeight + 40;
+      let e = buildEntries.get(item.id);
+      if (!visible) {
+        if (e && !e.hidden) { e.label.hidden = true; e.hidden = true; }
+        continue;
+      }
+      if (!e) {
+        const label = document.createElement("div");
+        label.className = "of-bp-label";
+        const pct = document.createElement("span");
+        pct.className = "of-bp-pct";
+        const sec = document.createElement("span");
+        sec.className = "of-bp-sec";
+        label.append(pct, sec);
+        layer.appendChild(label);
+        e = { label, pct, sec, text: "", hidden: false, x: NaN, y: NaN };
+        buildEntries.set(item.id, e);
+      }
+      if (e.hidden) { e.label.hidden = false; e.hidden = false; }
+      const sx = Math.round(screen.x);
+      const sy = Math.round(screen.y + yOffset);
+      if (e.x !== sx) { e.label.style.setProperty("--bp-x", `${sx}px`); e.x = sx; }
+      if (e.y !== sy) { e.label.style.setProperty("--bp-y", `${sy}px`); e.y = sy; }
+      const elapsed = Math.max(0, tick - item.startTick);
+      const pctVal = Math.min(100, Math.floor((elapsed / item.duration) * 100));
+      const secs = Math.max(0, Math.ceil((item.duration - elapsed) / TICKS_PER_SECOND));
+      const txt = `${pctVal}|${secs}`;
+      if (e.text !== txt) {
+        e.pct.textContent = `${pctVal}%`;
+        e.sec.textContent = `${secs}s`;
+        e.text = txt;
+      }
+    }
+  }
+
+  function setBuildProgressEnabled(on) {
+    settings.buildProgress = !!on;
+    if (!on) {
+      clearBuildEntries();
+      document.getElementById(BUILD_LAYER_ID)?.remove();
+      document.getElementById(BUILD_STYLE_ID)?.remove();
+    }
     ensureMasterLoop();
   }
 
@@ -3694,8 +4327,11 @@
 
   function anyFeatureEnabled() {
     return settings.samCoverage || settings.nukeGrouper || settings.teammateMarkers ||
-      settings.incomingNukeAlert || settings.globalNukeActivity || settings.enemyNukeReadiness ||
+      settings.incomingNukeAlert || settings.globalNukeActivity || settings.personalNukeTracker ||
+      settings.enemyNukeReadiness ||
       settings.tradeIncome || settings.tradeCaptures || settings.tradeTransports || settings.tradeWarships ||
+      settings.overlayTroopRate || settings.overlayGoldIncome ||
+      settings.buildProgress ||
       settings.goldPerSecond || settings.goldPerMinute || settings.troopPerSecond || settings.troopPerMinute;
   }
 
@@ -3710,6 +4346,10 @@
     if (globalActivityPanelVisible) clearGlobalActivityPanel();
     teardownEnemyNukesHover();
     teardownTradePartnerHover();
+    removeStatsRows();
+    otherGoldTrackers.clear();
+    otherSplitEvents.clear();
+    clearBuildEntries();
     if (goldIncomePanelVisible) clearGoldIncomeDisplay();
     if (troopRatePanelVisible) clearTroopRateDisplay();
   }
@@ -3727,6 +4367,12 @@
       masterLoopFrame = requestAnimationFrame(runMasterLoop);
       return;
     }
+    // Auto-hibernation and boot guard: the bridge does no feature work at all
+    // while the page is starting, and parks for 30s after any hot call.
+    if (isBridgeHibernating() || isBootGuarded()) {
+      masterLoopFrame = requestAnimationFrame(runMasterLoop);
+      return;
+    }
     lastMasterRunAt = now;
 
     const context = getGameContext();
@@ -3736,9 +4382,6 @@
         teardownAllInGameFeatures();
         masterWasInGame = false;
       }
-      // Teammate markers run in their own requestAnimationFrame loop (they are
-      // a spawn-phase feature and isGameActive() is false during spawn), so the
-      // master loop doesn't drive them.
       masterLoopFrame = requestAnimationFrame(runMasterLoop);
       return;
     }
@@ -3750,17 +4393,26 @@
     }
     lastMasterWorkAt = now;
 
-    if (settings.samCoverage && now - lastSamModePollAt >= SAM_MODE_POLL_MS) {
-      lastSamModePollAt = now;
-      syncSamMode();
+    // One feature throwing must never kill the rAF chain (that would take
+    // every other feature down with it, silently). Report and keep going.
+    try {
+      if (settings.samCoverage && now - lastSamModePollAt >= SAM_MODE_POLL_MS) {
+        lastSamModePollAt = now;
+        syncSamMode();
+      }
+      if (settings.nukeGrouper) syncNukeGrouper();
+      if (settings.incomingNukeAlert) syncIncomingNukeAlert();
+      if (settings.globalNukeActivity) syncGlobalNukeActivity();
+      if (settings.enemyNukeReadiness) syncEnemyNukes();
+      if (settings.tradeIncome || settings.tradeCaptures || settings.tradeTransports || settings.tradeWarships ||
+          settings.overlayTroopRate || settings.overlayGoldIncome) syncTradePartnerIncome();
+      if (settings.goldPerSecond || settings.goldPerMinute) syncGoldIncome();
+      if (settings.troopPerSecond || settings.troopPerMinute) syncTroopRate();
+      if (settings.buildProgress) syncBuildProgress();
+    } catch (e) {
+      reportToPopup("feature error: " + (e?.message ?? String(e)));
+      try { console.error("[Openfront+] master loop error:", e); } catch (_) {}
     }
-    if (settings.nukeGrouper) syncNukeGrouper();
-    if (settings.incomingNukeAlert) syncIncomingNukeAlert();
-    if (settings.globalNukeActivity) syncGlobalNukeActivity();
-    if (settings.enemyNukeReadiness) syncEnemyNukes();
-    if (settings.tradeIncome || settings.tradeCaptures || settings.tradeTransports || settings.tradeWarships) syncTradePartnerIncome();
-    if (settings.goldPerSecond || settings.goldPerMinute) syncGoldIncome();
-    if (settings.troopPerSecond || settings.troopPerMinute) syncTroopRate();
 
     masterLoopFrame = requestAnimationFrame(runMasterLoop);
   }
@@ -3795,6 +4447,9 @@
     setTradeCapturesEnabled(Boolean(src.tradeCaptures));
     setTradeTransportsEnabled(Boolean(src.tradeTransports));
     setTradeWarshipsEnabled(Boolean(src.tradeWarships));
+    setOverlayTroopRateEnabled(Boolean(src.overlayTroopRate));
+    setOverlayGoldIncomeEnabled(Boolean(src.overlayGoldIncome));
+    setBuildProgressEnabled(Boolean(src.buildProgress));
 
     const oldGoldActive = settings.goldPerSecond || settings.goldPerMinute;
     settings.goldPerSecond = Boolean(src.goldPerSecond);
@@ -3838,5 +4493,6 @@
 
   window.addEventListener("pagehide", stopAllFeatures, { once: true });
 
-  window.postMessage({ source: PAGE_SOURCE, type: "READY" }, "*");
+  const BRIDGE_VERSION = "v2.0.0-opt2";
+  window.postMessage({ source: PAGE_SOURCE, type: "READY", payload: { version: BRIDGE_VERSION } }, "*");
 })();
