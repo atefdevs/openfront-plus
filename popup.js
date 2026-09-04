@@ -17,6 +17,9 @@
     tradeCaptures: false,
     tradeTransports: false,
     tradeWarships: false,
+    overlayTroopRate: true,
+    overlayGoldIncome: true,
+    buildProgress: true,
     goldPerSecond: true,
     goldPerMinute: true,
     troopPerSecond: false,
@@ -25,26 +28,34 @@
   const SETTING_IDS = Object.keys(DEFAULT_SETTINGS);
   const status = document.getElementById("status");
   let savedMessageTimer = null;
+  // Ids the user explicitly flipped — once present, the storage value is
+  // respected and the artifact-rescue in normalizeSettings no longer applies.
+  const touchedIds = new Set();
+  function markTouched(...ids) {
+    for (const id of ids) touchedIds.add(id);
+  }
 
   function normalizeSettings(value) {
     const source = value && typeof value === "object" ? value : {};
-    return {
-      samCoverage: Boolean(source.samCoverage),
-      nukeGrouper: Boolean(source.nukeGrouper),
-      teammateMarkers: Boolean(source.teammateMarkers),
-      incomingNukeAlert: Boolean(source.incomingNukeAlert),
-      globalNukeActivity: Boolean(source.globalNukeActivity),
-      personalNukeTracker: Boolean(source.personalNukeTracker),
-      enemyNukeReadiness: Boolean(source.enemyNukeReadiness),
-      tradeIncome: Boolean(source.tradeIncome),
-      tradeCaptures: Boolean(source.tradeCaptures),
-      tradeTransports: Boolean(source.tradeTransports),
-      tradeWarships: Boolean(source.tradeWarships),
-      goldPerSecond: Boolean(source.goldPerSecond),
-      goldPerMinute: Boolean(source.goldPerMinute),
-      troopPerSecond: Boolean(source.troopPerSecond),
-      troopPerMinute: Boolean(source.troopPerMinute),
-    };
+    // Missing keys fall back to defaults. Additionally, a default-ON key that
+    // reads as false WITHOUT a user-touch marker is treated as an artifact of
+    // the pre-migration normalizer bug and rescued once; after the user
+    // toggles anything themselves the __touched marker makes it permanent.
+    const out = {};
+    for (const key of Object.keys(DEFAULT_SETTINGS)) {
+      let v = source[key] === undefined
+        ? Boolean(DEFAULT_SETTINGS[key])
+        : Boolean(source[key]);
+      if (
+        source[key] === false &&
+        source[key + "__touched"] !== true &&
+        DEFAULT_SETTINGS[key] === true
+      ) {
+        v = Boolean(DEFAULT_SETTINGS[key]);
+      }
+      out[key] = v;
+    }
+    return out;
   }
 
   function readForm() {
@@ -52,6 +63,7 @@
     for (const id of SETTING_IDS) {
       const input = document.getElementById(id);
       out[id] = input ? input.checked : false;
+      if (touchedIds.has(id)) out[id + "__touched"] = true;
     }
     return out;
   }
@@ -71,8 +83,17 @@
   function updateDependencies() {
     updateAirspaceState();
     updateTradePartnerState();
+    updatePlayerStatsState();
     updateGoldIncomeState();
     updateTroopRateState();
+  }
+
+  function updatePlayerStatsState() {
+    const mainToggle = document.getElementById("playerStatsOverlay");
+    if (!mainToggle) return;
+    mainToggle.checked =
+      (document.getElementById("overlayTroopRate")?.checked || false) ||
+      (document.getElementById("overlayGoldIncome")?.checked || false);
   }
 
   function updateTradePartnerState() {
@@ -94,6 +115,7 @@
     if (!globalInput.checked) {
       personalInput.disabled = true;
       personalInput.checked = false;
+      markTouched("personalNukeTracker");
       if (lockIcon) lockIcon.style.display = "";
     } else {
       personalInput.disabled = false;
@@ -105,13 +127,9 @@
     const subs = document.getElementById("airspaceSubs");
     const arrow = document.getElementById("airspaceArrow");
     if (!subs || !arrow) return;
-    subs.classList.toggle("open");
-    arrow.classList.toggle("open");
-  }
-
-  function airspaceMainClicked() {
-    saveSettings();
-    updateAirspaceState();
+    const isOpen = subs.classList.toggle("open");
+    arrow.classList.toggle("open", isOpen);
+    arrow.textContent = isOpen ? "▼" : "▶";
   }
 
   function updateGoldIncomeState() {
@@ -136,8 +154,9 @@
     const subs = document.getElementById("goldIncomeSubs");
     const arrow = document.getElementById("goldIncomeArrow");
     if (!subs || !arrow) return;
-    subs.classList.toggle("open");
-    arrow.classList.toggle("open");
+    const isOpen = subs.classList.toggle("open");
+    arrow.classList.toggle("open", isOpen);
+    arrow.textContent = isOpen ? "▼" : "▶";
   }
 
   function goldIncomeMainClicked() {
@@ -148,6 +167,7 @@
     const newState = mainToggle.checked;
     perSecond.checked = newState;
     perMinute.checked = newState;
+    markTouched("goldPerSecond", "goldPerMinute");
     saveSettings();
     updateGoldIncomeState();
   }
@@ -156,8 +176,9 @@
     const subs = document.getElementById("troopRateSubs");
     const arrow = document.getElementById("troopRateArrow");
     if (!subs || !arrow) return;
-    subs.classList.toggle("open");
-    arrow.classList.toggle("open");
+    const isOpen = subs.classList.toggle("open");
+    arrow.classList.toggle("open", isOpen);
+    arrow.textContent = isOpen ? "▼" : "▶";
   }
 
   function troopRateMainClicked() {
@@ -168,6 +189,7 @@
     const newState = mainToggle.checked;
     perSecond.checked = newState;
     perMinute.checked = newState;
+    markTouched("troopPerSecond", "troopPerMinute");
     saveSettings();
     updateTroopRateState();
   }
@@ -176,8 +198,9 @@
     const subs = document.getElementById("tradePartnerSubs");
     const arrow = document.getElementById("tradePartnerArrow");
     if (!subs || !arrow) return;
-    subs.classList.toggle("open");
-    arrow.classList.toggle("open");
+    const isOpen = subs.classList.toggle("open");
+    arrow.classList.toggle("open", isOpen);
+    arrow.textContent = isOpen ? "▼" : "▶";
   }
 
   function tradePartnerMainClicked() {
@@ -194,8 +217,32 @@
       const input = document.getElementById(id);
       if (input) input.checked = newState;
     }
+    markTouched(...subs);
     saveSettings();
     updateTradePartnerState();
+  }
+
+  function togglePlayerStatsSubs() {
+    const subs = document.getElementById("playerStatsSubs");
+    const arrow = document.getElementById("playerStatsArrow");
+    if (!subs || !arrow) return;
+    const isOpen = subs.classList.toggle("open");
+    arrow.classList.toggle("open", isOpen);
+    arrow.textContent = isOpen ? "▼" : "▶";
+  }
+
+  function playerStatsMainClicked() {
+    const mainToggle = document.getElementById("playerStatsOverlay");
+    const subs = ["overlayTroopRate", "overlayGoldIncome"];
+    if (!mainToggle) return;
+    const newState = mainToggle.checked;
+    for (const id of subs) {
+      const input = document.getElementById(id);
+      if (input) input.checked = newState;
+    }
+    markTouched(...subs);
+    saveSettings();
+    updatePlayerStatsState();
   }
 
   async function saveSettings() {
@@ -212,11 +259,11 @@
 
   function showSaved() {
     window.clearTimeout(savedMessageTimer);
-    status.textContent = "Saved succesfully.";
+    status.textContent = "Saved successfully.";
     status.classList.remove("error");
     status.classList.add("saved");
     savedMessageTimer = window.setTimeout(() => {
-      status.textContent = "Settings are stored locally. You wont need to redo them.";
+      status.textContent = "Settings are stored locally. You won't need to redo them.";
       status.classList.remove("saved");
     }, 1100);
   }
@@ -227,7 +274,7 @@
     status.classList.remove("saved");
     status.classList.add("error");
     savedMessageTimer = window.setTimeout(() => {
-      status.textContent = "Settings are stored locally. You wont need to redo them.";
+      status.textContent = "Settings are stored locally. You won't need to redo them.";
       status.classList.remove("error");
     }, 2500);
   }
@@ -236,6 +283,9 @@
   for (const id of SETTING_IDS) {
     const input = document.getElementById(id);
     if (!input) continue;
+
+    // Record explicit user intent before any handler saves.
+    input.addEventListener("change", () => { markTouched(id); });
 
     if (id === "goldPerSecond" || id === "goldPerMinute") {
       input.addEventListener("change", () => {
@@ -253,10 +303,15 @@
         saveSettings();
         updateTradePartnerState();
       });
-    } else if (id === "globalNukeActivity") {
+    } else if (id === "overlayTroopRate" || id === "overlayGoldIncome") {
       input.addEventListener("change", () => {
         saveSettings();
+        updatePlayerStatsState();
+      });
+    } else if (id === "globalNukeActivity") {
+      input.addEventListener("change", () => {
         updateDependencies();
+        saveSettings();
       });
     } else {
       input.addEventListener("change", saveSettings);
@@ -264,10 +319,10 @@
   }
 
   // Collapse/expand
-  const goldIncomeHeader = document.getElementById("goldIncomeHeader");
-  if (goldIncomeHeader) {
-    goldIncomeHeader.addEventListener("click", (e) => {
-      if (e.target.tagName === "INPUT") return;
+  const goldIncomeArrowBtn = document.getElementById("goldIncomeArrow");
+  if (goldIncomeArrowBtn) {
+    goldIncomeArrowBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
       toggleGoldIncomeSubs();
     });
   }
@@ -279,10 +334,10 @@
   }
 
   // Troop rate collapse/expand
-  const troopRateHeader = document.getElementById("troopRateHeader");
-  if (troopRateHeader) {
-    troopRateHeader.addEventListener("click", (e) => {
-      if (e.target.tagName === "INPUT") return;
+  const troopRateArrowBtn = document.getElementById("troopRateArrow");
+  if (troopRateArrowBtn) {
+    troopRateArrowBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
       toggleTroopRateSubs();
     });
   }
@@ -294,10 +349,10 @@
   }
 
   // Trade partner collapse/expand
-  const tradePartnerHeader = document.getElementById("tradePartnerHeader");
-  if (tradePartnerHeader) {
-    tradePartnerHeader.addEventListener("click", (e) => {
-      if (e.target.tagName === "INPUT") return;
+  const tradePartnerArrowBtn = document.getElementById("tradePartnerArrow");
+  if (tradePartnerArrowBtn) {
+    tradePartnerArrowBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
       toggleTradePartnerSubs();
     });
   }
@@ -306,6 +361,19 @@
   const tradePartnerToggle = document.getElementById("tradePartner");
   if (tradePartnerToggle) {
     tradePartnerToggle.addEventListener("change", tradePartnerMainClicked);
+  }
+
+  // Player stats collapse/expand + main toggle
+  const playerStatsArrowBtn = document.getElementById("playerStatsArrow");
+  if (playerStatsArrowBtn) {
+    playerStatsArrowBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      togglePlayerStatsSubs();
+    });
+  }
+  const playerStatsToggle = document.getElementById("playerStatsOverlay");
+  if (playerStatsToggle) {
+    playerStatsToggle.addEventListener("change", playerStatsMainClicked);
   }
 
   // Disabled personal tracker click
@@ -320,14 +388,85 @@
     });
   }
 
-  // Airspace collapse/expand
-  const airspaceHeader = document.getElementById("airspaceHeader");
-  if (airspaceHeader) {
-    airspaceHeader.addEventListener("click", (e) => {
-      if (e.target.tagName === "INPUT") return;
+  // Airspace collapse/expand — button only, so checkbox works independently
+  const airspaceArrowBtn = document.getElementById("airspaceArrow");
+  if (airspaceArrowBtn) {
+    airspaceArrowBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
       toggleAirspaceSubs();
     });
   }
+
+  // Display bridge errors captured via storage, so a crash can be read from the
+  // popup even when the game tab is frozen.
+  const errorLogEl = document.getElementById("errorLog");
+
+  function renderErrorLog() {
+    browser.storage.local
+      .get({ openfrontPlusErrors: [] })
+      .then((stored) => {
+        const list = Array.isArray(stored.openfrontPlusErrors)
+          ? stored.openfrontPlusErrors
+          : [];
+        if (!errorLogEl) return;
+        if (list.length === 0) {
+          errorLogEl.hidden = true;
+          return;
+        }
+        errorLogEl.replaceChildren();
+        const title = document.createElement("div");
+        title.className = "error-log-title";
+        title.textContent = `Recent errors (${list.length}) — reload the OpenFront tab and check its console for "[Openfront+]" lines:`;
+        errorLogEl.appendChild(title);
+        for (const item of list.slice(-5)) {
+          const div = document.createElement("div");
+          const d = new Date(item.ts);
+          div.textContent = `${d.toLocaleTimeString()} · ${item.message}`;
+          errorLogEl.appendChild(div);
+        }
+        errorLogEl.hidden = false;
+      })
+      .catch(() => {});
+  }
+
+  function renderBridgeInfo() {
+    browser.storage.local
+      .get({ openfrontPlusBoots: [], openfrontPlusEvents: [] })
+      .then((stored) => {
+        const events = Array.isArray(stored.openfrontPlusEvents) ? stored.openfrontPlusEvents : [];
+        const boots = Array.isArray(stored.openfrontPlusBoots) ? stored.openfrontPlusBoots : [];
+        const wrap = document.createElement("div");
+        wrap.style.cssText = "margin-top:10px;font-size:10px;color:#94a3b8;line-height:1.6;";
+        const line = document.createElement("div");
+        if (boots.length > 0) {
+          const last = boots[boots.length - 1];
+          line.textContent =
+            `Bridge build: ${last.version} · booted ${new Date(last.ts).toLocaleTimeString()} · ${last.host ?? "?"}`;
+        } else {
+          line.textContent = "Bridge: no boot recorded yet.";
+        }
+        wrap.appendChild(line);
+        const ev = events.length > 0 ? events[events.length - 1] : null;
+        if (ev) {
+          const evLine = document.createElement("div");
+          evLine.textContent =
+            `Content script ran: ${new Date(ev.ts).toLocaleTimeString()} · ${ev.host} · ${ev.href}`;
+          wrap.appendChild(evLine);
+        } else {
+          const evLine = document.createElement("div");
+          evLine.textContent = "Content script: never ran (no event).";
+          wrap.appendChild(evLine);
+        }
+        (document.querySelector("main") ?? document.body).appendChild(wrap);
+      })
+      .catch(() => {});
+  }
+
+  browser.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "local" && changes.openfrontPlusErrors) {
+      renderErrorLog();
+    }
+  });
 
   // Init
   browser.storage.local
@@ -339,4 +478,7 @@
       writeForm(DEFAULT_SETTINGS);
       status.textContent = "Could not load settings.";
     });
+
+  renderErrorLog();
+  renderBridgeInfo();
 })();

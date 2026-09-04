@@ -226,6 +226,39 @@ body {
   color: #fca5a5;
 }
 
+.error-log {
+  margin: 12px 2px 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 8px;
+  background: rgba(50, 12, 16, 0.45);
+  color: #fca5a5;
+  font-size: 10px;
+  line-height: 1.45;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.error-log .error-log-title {
+  font-weight: 800;
+  color: #fca5a5;
+  margin-bottom: 4px;
+}
+
+.error-log div {
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(248, 113, 113, 0.18);
+}
+
+.error-log div:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
 .badge--red {
   background: rgba(248, 113, 113, 0.14);
   border: 1px solid rgba(248, 113, 113, 0.38);

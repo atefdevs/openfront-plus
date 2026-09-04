@@ -65,6 +65,21 @@
           </span>
         </label>
 
+        <!-- Build Progress Labels -->
+        <label class="toggle-card">
+          <span class="copy">
+            <span class="title-row">
+              <strong>Build Progress Labels</strong>
+              <span class="badge badge--green">🏗 Construction</span>
+            </span>
+            <small>Adds a percentage and the remaining seconds under every structure's build bar — cities, ports, factories, defense posts, missile silos, and SAM launchers.</small>
+          </span>
+          <span class="switch">
+            <input id="buildProgress" type="checkbox" />
+            <span class="track" aria-hidden="true"></span>
+          </span>
+        </label>
+
         <!-- Incoming Nuke Alert -->
         <label class="toggle-card">
           <span class="copy">
@@ -74,7 +89,7 @@
               <span class="badge badge--orange">💣 Hydro Bombs</span>
               <span class="badge badge--purple">🚀 MIRV</span>
             </span>
-            <small>Shows a HUD panel listing every nuke heading for your territory — type, count, and seconds until impact. Updates live as nukes are intercepted or land. MIRV carriers split into warheads which CAN be intercepted. Tells you if you have sufficient SAMs to intercept as long as they're in range. SAMs from allies/teammates count.</small>
+            <small>Shows a HUD panel listing every nuke heading for your territory — type, count, and seconds until impact. Updates live as nukes are intercepted or land. MIRV carriers split into warheads which CAN be intercepted. Tells you if you have sufficient SAMs to intercept, using each nuke's real flight path: SAM missile travel time, reload cycles, and in-progress upgrades are all accounted for. SAMs from allies/teammates count.</small>
           </span>
           <span class="switch">
             <input id="incomingNukeAlert" type="checkbox" />
@@ -106,7 +121,7 @@
                 <span class="title-row">
                   <strong>Show Your Nukes</strong>
                   <span class="badge badge--blue">☢ Atom Bombs</span>
-                  <span class="badge badge--orange">💣 Hydrogen Bombs</span>
+                  <span class="badge badge--orange">💣 Hydro Bombs</span>
                   <span class="badge badge--purple">🚀 MIRV</span>
                 </span>
                 <small>Also shows how many of those nukes are yours.</small>
@@ -135,6 +150,49 @@
           </span>
         </label>
 
+        <!-- Player Stats Overlay (collapsible) -->
+        <div class="toggle-card toggle-card--collapsible" id="playerStatsCard">
+          <div class="toggle-card-header" id="playerStatsHeader">
+            <span class="copy">
+              <span class="title-row">
+                <strong>Player Stats Overlay</strong>
+                <span class="badge badge--green">&#9876; Troops</span>
+                <span class="badge badge--blue">💰 Gold</span>
+              </span>
+              <small>Adds rows to the player-info overlay (shown when you hover a player): their natural troop growth from the game's formula, and their gold income measured from their gold changes over the last 60 s — same model as your own panels, including a base/ports/warships/factories breakdown.</small>
+            </span>
+            <span class="switch">
+              <input id="playerStatsOverlay" type="checkbox" />
+              <span class="track" aria-hidden="true"></span>
+            </span>
+            <span class="collapse-arrow" id="playerStatsArrow">&#9654;</span>
+          </div>
+          <div class="sub-toggles" id="playerStatsSubs">
+            <label class="toggle-card toggle-card--sub">
+              <span class="copy">
+                <span class="title-row">
+                  <strong>Troop Rate (Others)</strong>
+                </span>
+              </span>
+              <span class="switch">
+                <input id="overlayTroopRate" type="checkbox" />
+                <span class="track" aria-hidden="true"></span>
+              </span>
+            </label>
+            <label class="toggle-card toggle-card--sub">
+              <span class="copy">
+                <span class="title-row">
+                  <strong>Gold Income (Others)</strong>
+                </span>
+              </span>
+              <span class="switch">
+                <input id="overlayGoldIncome" type="checkbox" />
+                <span class="track" aria-hidden="true"></span>
+              </span>
+            </label>
+          </div>
+        </div>
+
         <!-- Trade Partner (collapsible) -->
         <div class="toggle-card toggle-card--collapsible" id="tradePartnerCard">
           <div class="toggle-card-header" id="tradePartnerHeader">
@@ -144,7 +202,7 @@
                 <span class="badge badge--blue">💰 Trade</span>
                 <span class="badge badge--red">⚔ Naval</span>
               </span>
-              <small>Adds rows to the player-info overlay (shown when you hover a player). Income shows the gold you receive from trading with them. Naval rows split each event into "theirs" (your navy vs them) and "mine" (their navy vs you): trade-ship captures, transport ships destroyed, and warships destroyed.</small>
+              <small>Adds rows to the player-info overlay (shown when you hover a player). Income shows the gold you receive from trading with them, per second and per minute — port-to-port trade ships, captured ships, and train stops at each other's cities/ports/factories. Naval rows split each event into "theirs" (your navy vs them) and "mine" (their navy vs you): trade-ship captures, transport ships destroyed, and warships destroyed.</small>
             </span>
             <span class="switch">
               <input id="tradePartner" type="checkbox" />
@@ -288,7 +346,9 @@
 
       </section>
 
-      <p id="status" class="status" role="status" aria-live="polite">Settings are stored locally. You wont need to redo them.</p>
+      <p id="status" class="status" role="status" aria-live="polite">Settings are stored locally. You won't need to redo them.</p>
+
+      <div id="errorLog" class="error-log" hidden></div>
     </main>
     <script src="popup.js"></script>
   </body>
