@@ -397,38 +397,6 @@
     });
   }
 
-  // Display bridge errors captured via storage, so a crash can be read from the
-  // popup even when the game tab is frozen.
-  const errorLogEl = document.getElementById("errorLog");
-
-  function renderErrorLog() {
-    browser.storage.local
-      .get({ openfrontPlusErrors: [] })
-      .then((stored) => {
-        const list = Array.isArray(stored.openfrontPlusErrors)
-          ? stored.openfrontPlusErrors
-          : [];
-        if (!errorLogEl) return;
-        if (list.length === 0) {
-          errorLogEl.hidden = true;
-          return;
-        }
-        errorLogEl.replaceChildren();
-        const title = document.createElement("div");
-        title.className = "error-log-title";
-        title.textContent = `Recent errors (${list.length}) — reload the OpenFront tab and check its console for "[Openfront+]" lines:`;
-        errorLogEl.appendChild(title);
-        for (const item of list.slice(-5)) {
-          const div = document.createElement("div");
-          const d = new Date(item.ts);
-          div.textContent = `${d.toLocaleTimeString()} · ${item.message}`;
-          errorLogEl.appendChild(div);
-        }
-        errorLogEl.hidden = false;
-      })
-      .catch(() => {});
-  }
-
   function renderBridgeInfo() {
     browser.storage.local
       .get({ openfrontPlusBoots: [], openfrontPlusEvents: [] })
@@ -462,12 +430,6 @@
       .catch(() => {});
   }
 
-  browser.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === "local" && changes.openfrontPlusErrors) {
-      renderErrorLog();
-    }
-  });
-
   // Init
   browser.storage.local
     .get(STORAGE_KEY)
@@ -479,6 +441,5 @@
       status.textContent = "Could not load settings.";
     });
 
-  renderErrorLog();
   renderBridgeInfo();
 })();
