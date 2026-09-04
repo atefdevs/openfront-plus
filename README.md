@@ -38,7 +38,9 @@ A HUD panel listing every nuke heading for **your** territory:
   time.
 
 Updates live as nukes are intercepted or land. MIRV carriers can't be shot down,
-but the warheads they release can.
+but the warheads they release can. Intercept estimates use each nuke's real
+flight path — SAM missile travel time, reload cycles, and in-progress upgrades
+are all accounted for, matching the game's own preshot logic.
 
 ### 5. Show Nukes in Airspace
 A panel showing every nuke currently in the airspace, with global counts of
@@ -64,8 +66,20 @@ vs them) and **"mine"** (their navy vs you). Sub-toggles:
 - **Warships Down** — 💥 warships destroyed.
 
 The naval counters are best-effort client-side estimates and reset each game.
+Trade income includes port-to-port trade ships, captured ships your warships
+bring in, and train stops at each other's cities/ports/factories — shown per
+second and per minute.
 
-### 8. Gold Income Display
+### 8. Player Stats Overlay
+Adds rows to the player-info overlay (shown when you hover a player):
+- **Troop Rate (Others)** — their natural troop growth per second/minute,
+  straight from the game's own formula (same figure as your Troop Rate panel).
+- **Gold Income (Others)** — their gold income per second/minute, measured from
+  their gold changes over the last 60 s (same model as your Gold Income panel),
+  with a base/ports/warships/factories breakdown estimated from detected
+  payouts to that player.
+
+### 9. Gold Income Display
 A draggable panel showing your gold income **per second** and/or **per minute**
 (position is remembered). The total is measured from your actual gold, then split
 into:
@@ -77,12 +91,18 @@ into:
 Values are averaged over a 60-second window. Conquest loot from killing players
 is never counted, and spending is ignored.
 
-### 9. Troop Rate Display
+### 10. Troop Rate Display
 A draggable panel showing your natural troop growth **per second** and/or **per
 minute** (position is remembered). It uses the game's exact growth formula, so
 it matches the server even while you're under attack. Building cities raises
 your population cap and therefore the growth rate. Reports **natural growth
 only** — attacking other players is never counted.
+
+### 11. Build Progress Labels
+While a structure is under construction (city, port, factory, defense post,
+missile silo, SAM launcher), a small label appears under its build bar showing
+the percentage complete and the remaining build time in seconds. Durations come
+from the game's own config, so they match the server exactly.
 
 ## What it doesn't do
 
@@ -112,5 +132,7 @@ way as Chrome (the exact steps differ per browser), working on getting this exte
 ## Notes
 
 - Settings are stored locally and persist between games.
+- The extension only runs on `https://openfront.io` — embedded hosts such as
+  CrazyGames aren't covered.
 - This extension is **unofficial** and is not affiliated with or endorsed by
   OpenFront.
