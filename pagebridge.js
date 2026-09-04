@@ -3056,12 +3056,18 @@
       removeStatsRows();
     } else {
       if (settings.overlayGoldIncome) {
-        // Drive the shared ship/train scanners so per-player split buckets
-        // stay populated even with the local gold panel switched off.
+        maybeSampleOtherGold(context.game);
+      }
+      if (settings.tradeIncome || settings.overlayGoldIncome) {
+        // Drive the shared ship/train scanners so per-partner and per-player
+        // income feeds stay populated even with the local gold panel off.
+        // Trade Income (including factory trade from other players' trains
+        // stopping at your stations) reads +0/s without this whenever the
+        // gold panel and overlay-gold are both disabled, because nothing was
+        // recording ship/train payouts.
         const localPanelOn = settings.goldPerSecond || settings.goldPerMinute;
         const meNow = getMyPlayer(context.game);
         if (!localPanelOn && meNow) measureSourceSplit(context.game, meNow);
-        maybeSampleOtherGold(context.game);
       }
       const me = getMyPlayer(context.game);
       if (me && anyTradePartnerFeature()) updateNavalEvents(context.game, me);

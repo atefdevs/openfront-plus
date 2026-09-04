@@ -126,26 +126,6 @@
       return;
     }
 
-    if (data.type === "ERROR") {
-      // Bridge errors are surfaced to the popup so they can be read even if
-      // the game tab is frozen (the popup is a separate process).
-      try {
-        const message = String(data.payload?.message ?? "");
-        browser.storage.local
-          .get({ openfrontPlusErrors: [] })
-          .then((stored) => {
-            const list = Array.isArray(stored.openfrontPlusErrors)
-              ? stored.openfrontPlusErrors.slice(-19)
-              : [];
-            list.push({ ts: Date.now(), message });
-            return browser.storage.local.set({
-              openfrontPlusErrors: list.slice(-20),
-            });
-          })
-          .catch(() => {});
-      } catch (_) {}
-      return;
-    }
   });
 
   browser.storage.onChanged.addListener((changes, areaName) => {
