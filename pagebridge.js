@@ -481,8 +481,29 @@
     return Number.isFinite(cd) && cd > 0 ? cd : SAM_COOLDOWN_TICKS;
   }
 
-  function getSamAvailableShotsNow(u) {
-    return Math.max(0, getUnitLevel(u) - getMissileTimerQueue(u).length);
+  function getSiloCooldownTicks(g) {
+    const cfg = callMethod(g, "config") ?? readProperty(g, "config") ?? null;
+    const cd = toFiniteNumber(callMethod(cfg, "SiloCooldown"));
+    if (Number.isFinite(cd) && cd > 0) return cd;
+    return getSamCooldownTicks(g);
+  }
+
+  // Tubes busy = queue entries whose cooldown hasn't expired yet, evaluated
+  // with game ticks — the same rule the server uses to reload. Raw
+  // queue.length goes stale client-side (idle launchers don't re-emit unit
+  // updates), which collapsed available shots toward 0 after any volley.
+  function countBusyTubes(game, queue, cooldown) {
+    const nowTicks = getGameTick(game);
+    if (!Number.isFinite(nowTicks)) return queue.length;
+    let busy = 0;
+    for (const launched of queue) {
+      if (nowTicks - launched < cooldown) busy++;
+    }
+    return busy;
+  }
+
+  function getSamAvailableShotsNow(game, u) {
+    return Math.max(0, getUnitLevel(u) - countBusyTubes(game, getMissileTimerQueue(u), getSamCooldownTicks(game)));
   }
 
   function estimateSamShotsInWindow(g, u, tw) {
@@ -490,7 +511,7 @@
     const cooldown = getSamCooldownTicks(g), level = getUnitLevel(u), queue = getMissileTimerQueue(u);
     const nowTicks = getGameTick(g);
     let shots = 0;
-    const free = Math.max(0, level - queue.length);
+    const free = Math.max(0, level - countBusyTubes(g, queue, cooldown));
     if (free > 0) shots += free * (Math.floor(tw / cooldown) + 1);
     for (const launched of queue) {
       const elapsed = Number.isFinite(nowTicks) ? nowTicks - launched : cooldown;
@@ -857,7 +878,7 @@
       covering.push(s);
       const own = getUnitOwner(s); if (own) owners.set(getPlayerId(own), own);
     }
-    const atoms = 1 + covering.reduce((sum, s) => sum + getSamAvailableShotsNow(s), 0);
+    const atoms = 1 + covering.reduce((sum, s) => sum + getSamAvailableShotsNow(game, s), 0);
     let potential = 0;
     for (const own of owners.values()) {
       const gold = getPlayerGold(own);
@@ -2382,11 +2403,11 @@
   let lastEnemyNukesPlayerKey = null;
   let enemyNukesRenderCache = null;
 
-  function getSiloReadiness(u) {
+  function getSiloReadiness(game, u) {
     const level = toFiniteNumber(callMethod(u, "level") ?? readProperty(readProperty(u, "data"), "level"), null);
     if (level === null) return null;
     const lvl = Math.max(0, Math.round(level));
-    return { level: lvl, ready: Math.max(0, lvl - getMissileTimerQueue(u).length) };
+    return { level: lvl, ready: Math.max(0, lvl - countBusyTubes(game, getMissileTimerQueue(u), getSiloCooldownTicks(game))) };
   }
 
   // Summed readiness across every silo owned by `player`. Null when the unit
@@ -2399,7 +2420,7 @@
       if (getUnitType(u) !== "Missile Silo") continue;
       const owner = getUnitOwner(u);
       if (!owner || !isSamePlayer(owner, player)) continue;
-      const s = getSiloReadiness(u);
+      const s = getSiloReadiness(game, u);
       if (s === null) continue;
       st.silos++;
       st.total += s.level;
