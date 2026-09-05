@@ -19,6 +19,9 @@
   const GLOBAL_ACTIVITY_STYLE_ID = "of-nuke-tools-global-activity-style";
   const GOLD_INCOME_STYLE_ID = "of-nuke-tools-gold-income-style";
   const ENEMY_NUKES_HOVER_ID = "of-nuke-tools-enemy-nukes-hover";
+  const INTEL_DIPLOMACY_HOVER_ID = "of-nuke-tools-intel-diplomacy-hover";
+  const INTEL_READINESS_HOVER_ID = "of-nuke-tools-intel-readiness-hover";
+  const INTEL_TARGETS_HOVER_ID = "of-nuke-tools-intel-targets-hover";
   const TRADE_PARTNER_HOVER_ID = "of-nuke-tools-trade-partner-hover";
   const TRADE_CAPTURES_HOVER_ID = "of-nuke-tools-trade-captures-hover";
   const TRADE_TRANSPORTS_HOVER_ID = "of-nuke-tools-trade-transports-hover";
@@ -122,6 +125,9 @@
     globalNukeActivity: false,
     personalNukeTracker: false,
     enemyNukeReadiness: false,
+    intelDiplomacy: false,
+    intelReadinessPct: false,
+    intelTargets: false,
     tradeIncome: false,
     tradeCaptures: false,
     tradeTransports: false,
@@ -516,6 +522,9 @@
     for (const launched of queue) {
       const elapsed = Number.isFinite(nowTicks) ? nowTicks - launched : cooldown;
       const remaining = Math.max(0, cooldown - elapsed);
+      // Already-expired entries are counted as free tubes above (when ticks
+      // are known) — counting them again here would double-count.
+      if (Number.isFinite(nowTicks) && remaining <= 0) continue;
       if (remaining <= tw) shots += Math.floor((tw - remaining) / cooldown) + 1;
     }
     return shots;
@@ -1012,11 +1021,74 @@
   function getAtomExplosionRadius(game) { return getNukeMagnitudeRadius(game, "Atom Bomb") ?? 70; }
   function getHydrogenExplosionRadius(game) { return getNukeMagnitudeRadius(game, "Hydrogen Bomb") ?? getAtomExplosionRadius(game) * 1.8; }
 
+  const BLAST_OUTER_FALLBACK = { "Atom Bomb": 30, "Hydrogen Bomb": 100, "MIRV Warhead": 18 };
+  function getBlastOuterRadius(game, typeName) {
+    const r = getNukeMagnitudeRadius(game, typeName);
+    if (Number.isFinite(r) && r > 0) return r;
+    return BLAST_OUTER_FALLBACK[typeName] ?? 30;
+  }
+
+  // Does a nuke aimed elsewhere still scorch the player's land? A big blast
+  // centered just outside your border can flatten a huge chunk of territory.
+  // Results are cached per target tile (territory moves slowly next to nuke
+  // flight times) with early exit on the first owned tile found.
+  const blastTouchCache = new Map();
+  const BLAST_CACHE_MS = 2500;
+  function blastTouchesMyTerritory(game, me, targetTile, outer) {
+    const key = String(targetTile);
+    const now = performance.now();
+    const prev = blastTouchCache.get(key);
+    if (prev && now - prev.at < BLAST_CACHE_MS) return prev.hit;
+    let hit = false;
+    const cx = toFiniteNumber(callMethod(game, "x", targetTile), null);
+    const cy = toFiniteNumber(callMethod(game, "y", targetTile), null);
+    if (cx !== null && cy !== null && outer > 0) {
+      const r2 = outer * outer;
+      const x0 = Math.floor(cx - outer), x1 = Math.ceil(cx + outer);
+      const y0 = Math.floor(cy - outer), y1 = Math.ceil(cy + outer);
+      outer:
+      for (let x = x0; x <= x1; x++) {
+        for (let y = y0; y <= y1; y++) {
+          const dx = x - cx, dy = y - cy;
+          if (dx * dx + dy * dy > r2) continue;
+          const tile = toFiniteNumber(callMethod(game, "ref", x, y), null);
+          if (tile === null) continue;
+          if (isTileOwnedByPlayer(game, me, tile)) { hit = true; break outer; }
+        }
+      }
+    }
+    if (blastTouchCache.size > 400) blastTouchCache.clear();
+    blastTouchCache.set(key, { at: now, hit });
+    return hit;
+  }
+
   function getNukeTargetTile(game, unit) {
     return toFiniteNumber(callMethod(unit, "targetTile") ?? readProperty(readProperty(unit, "data"), "targetTile"), null);
   }
 
-  function buildNukeLabelKey(ac, hc) { return `a${ac}h${hc}`; }
+  function buildNukeLabelKey(ac, hc, namesKey) { return `a${ac}h${hc}n${namesKey}`; }
+
+  function getPlayerDisplayName(owner) {
+    if (!owner) return null;
+    const name = callMethod(owner, "displayName") ?? callMethod(owner, "name");
+    const s = name === undefined || name === null ? "" : String(name).trim();
+    return s || null;
+  }
+
+  function addGroupOwner(group, owner) {
+    if (!owner) return;
+    const pid = getPlayerId(owner);
+    if (group.ownerIds.has(pid)) return;
+    group.ownerIds.add(pid);
+    const name = getPlayerDisplayName(owner);
+    if (name) group.names.push(name);
+  }
+
+  function formatGroupNames(names) {
+    if (!names.length) return "";
+    if (names.length <= 3) return names.join(", ");
+    return `${names.slice(0, 3).join(", ")} +${names.length - 3} more`;
+  }
 
   function collectNukeGroups(game) {
     if (nukeGroupGame !== game) { nukeGroupGame = game; nextNukeGroupId = 1; persistentNukeGroups.clear(); }
@@ -1025,14 +1097,15 @@
     if (!atoms.available && !hydros.available) return [];
     const atomRad = getAtomExplosionRadius(game) * ATOM_GROUP_RADIUS_MULTIPLIER;
     const hydroRad = getHydrogenExplosionRadius(game) * ATOM_GROUP_RADIUS_MULTIPLIER;
-    for (const g of persistentNukeGroups.values()) { g.atomCount = 0; g.hydrogenCount = 0; }
+    for (const g of persistentNukeGroups.values()) { g.atomCount = 0; g.hydrogenCount = 0; g.names = []; g.ownerIds.clear(); }
 
     function process(unit, isHydro) {
       const expType = isHydro ? "Hydrogen Bomb" : "Atom Bomb";
       if (getUnitType(unit) !== expType || !isActiveFinishedUnit(unit)) return;
       const tile = getNukeTargetTile(game, unit);
       if (tile === null) return;
-      const rel = getRelationToMe(game, getUnitOwner(unit));
+      const owner = getUnitOwner(unit);
+      const rel = getRelationToMe(game, owner);
       if (rel !== "self" && rel !== "ally" && rel !== "enemy") return;
       const myRSq = (isHydro ? hydroRad * hydroRad : atomRad * atomRad);
       let nearest = null, nearestDist = Infinity;
@@ -1044,6 +1117,7 @@
       }
       if (nearest) {
         if (isHydro) nearest.hydrogenCount++; else nearest.atomCount++;
+        addGroupOwner(nearest, owner);
         return;
       }
       const world = tileToWorld(game, tile);
@@ -1053,7 +1127,10 @@
         ghostRadiusSquared: myRSq,
         atomCount: isHydro ? 0 : 1,
         hydrogenCount: isHydro ? 1 : 0,
+        ownerIds: new Set(),
+        names: [],
       };
+      addGroupOwner(group, owner);
       persistentNukeGroups.set(group.id, group);
     }
 
@@ -1081,18 +1158,20 @@
   function buildNukeLabelContent(group, colors) {
     const frag = document.createDocumentFragment();
     const pre = nukeLabelPrefix(group.relation);
+    const names = formatGroupNames(group.names || []);
+    const head = names ? `${pre} · ${names} ` : `${pre} `;
     if (group.atomCount > 0 && group.hydrogenCount > 0) {
-      frag.append(document.createTextNode(`${pre} ☢ x${group.atomCount} · `));
+      frag.append(document.createTextNode(`${head}☢ x${group.atomCount} · `));
       const hs = document.createElement("span"); hs.className = "of-nuke-tools-hbomb-count";
       hs.textContent = `💣 x${group.hydrogenCount}`;
       frag.appendChild(hs);
     } else if (group.hydrogenCount > 0) {
-      frag.append(document.createTextNode(`${pre} `));
+      frag.append(document.createTextNode(`${head}`));
       const hs = document.createElement("span"); hs.className = "of-nuke-tools-hbomb-count";
       hs.textContent = `💣 x${group.hydrogenCount}`;
       frag.appendChild(hs);
     } else {
-      frag.append(document.createTextNode(`${pre} ☢ x${group.atomCount}`));
+      frag.append(document.createTextNode(`${head}☢ x${group.atomCount}`));
     }
     return frag;
   }
@@ -1157,7 +1236,7 @@
         entry.label.style.setProperty("--nuke-hbomb-text", cols.hbombText ?? cols.text);
         entry.hadHydrogen = nowH;
       }
-      const lk = buildNukeLabelKey(group.atomCount, group.hydrogenCount);
+      const lk = buildNukeLabelKey(group.atomCount, group.hydrogenCount, (group.names || []).join(","));
       if (entry.labelKey !== lk) {
         const cols = nukeColors(group.relation, nowH);
         entry.label.replaceChildren(buildNukeLabelContent(group, cols));
@@ -1429,6 +1508,49 @@
   // indexing would update the wrong elements whenever two rows swap.
   const currentAlertRows = new Map();
   let prevNukeData = new Map();
+  // Death-event ring buffer for exact intercept/landed verdicts. The game
+  // rebuilds frameData().events.deadUnits every tick, so it must be drained
+  // ~every frame — the 400ms alert scan alone would miss deaths on the
+  // ticks in between.
+  const deathEventsByTick = new Map(); // tick -> [{ unitType, reachedTarget }]
+  let lastDeathDrainTick = -1;
+  function drainDeathEvents(game) {
+    if (!game) return;
+    const fd = callMethod(game, "frameData");
+    if (!fd) return;
+    const tick = toFiniteNumber(readProperty(fd, "tick"), null);
+    if (tick === null || tick <= lastDeathDrainTick) return;
+    lastDeathDrainTick = tick;
+    const ev = readProperty(fd, "events");
+    const dead = ev ? readProperty(ev, "deadUnits") : null;
+    if (Array.isArray(dead) && dead.length > 0) {
+      deathEventsByTick.set(tick, dead.map(d => ({
+        unitType: String(readProperty(d, "unitType") ?? ""),
+        reachedTarget: readProperty(d, "reachedTarget") === true,
+      })));
+    }
+    for (const t of [...deathEventsByTick.keys()]) {
+      if (tick - t > 100) deathEventsByTick.delete(t);
+    }
+  }
+  // Pull up to `count` recent death events of a nuke type (newest first),
+  // consuming them so each death attributes to exactly one notification.
+  function takeDeathEvents(nukeType, count) {
+    const matched = [];
+    const ticks = [...deathEventsByTick.keys()].sort((a, b) => b - a);
+    for (const t of ticks) {
+      const list = deathEventsByTick.get(t);
+      for (let i = list.length - 1; i >= 0 && matched.length < count; i--) {
+        if (list[i].unitType === nukeType) {
+          matched.push(list[i]);
+          list.splice(i, 1);
+        }
+      }
+      if (list.length === 0) deathEventsByTick.delete(t);
+      if (matched.length >= count) break;
+    }
+    return matched;
+  }
 
   function ensureAlertStyle() {
     appendStyle(ALERT_STYLE_ID, `
@@ -1438,6 +1560,13 @@
         display: flex; flex-direction: column; gap: 6px;
         min-width: 220px; max-width: 300px;
       }
+      .of-nuke-tools-panel-grip {
+        pointer-events: auto; cursor: grab; user-select: none;
+        -webkit-user-select: none; touch-action: none;
+        text-align: center; font-size: 9px; line-height: 1; color: #475569;
+        letter-spacing: 0.2em; padding: 3px 0 1px;
+      }
+      .of-nuke-tools-panel-grip:active { cursor: grabbing; color: #94a3b8; }
       .of-nuke-tools-alert-row {
         display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
         padding: 8px 12px; border-radius: 9px; background: rgba(7,12,18,0.93);
@@ -1520,22 +1649,22 @@
 
   function ensureAlertPanel() {
     ensureAlertStyle();
-    let p = document.getElementById(ALERT_PANEL_ID);
-    if (!p) {
-      p = document.createElement("div");
-      p.id = ALERT_PANEL_ID;
-      p.setAttribute("aria-live", "polite");
-      (document.body || document.documentElement).appendChild(p);
-    }
-    return p;
+    // Returns the inner content div; the outer shell (position + drag grip)
+    // survives row rebuilds, so callers keep working unchanged.
+    const { content } = ensureDraggableShell(ALERT_PANEL_ID, ALERT_POS_KEY);
+    content.setAttribute("aria-live", "polite");
+    return content;
   }
 
   function clearAlertPanel() {
     document.getElementById(ALERT_PANEL_ID)?.remove();
     document.getElementById(ALERT_STYLE_ID)?.remove();
+    blastTouchCache.clear();
     prevAlertData = "";
     currentAlertRows.clear();
     prevNukeData.clear();
+    deathEventsByTick.clear();
+    lastDeathDrainTick = -1;
     alertPanelVisible = false;
   }
 
@@ -1907,12 +2036,23 @@
         }
         if (targetTile === null) continue;
 
-        if (!isTileOwnedByPlayer(game, me, targetTile)) continue;
+        // Direct hit: the target tile itself is yours. Otherwise (atom /
+        // hydro / warhead only — carriers split first) check whether the
+        // blast footprint still reaches your land.
+        const direct = isTileOwnedByPlayer(game, me, targetTile);
+        let splash = false;
+        if (!direct) {
+          if (typeName === "MIRV") continue;
+          const outer = getBlastOuterRadius(game, typeName);
+          if (!blastTouchesMyTerritory(game, me, targetTile, outer)) continue;
+          splash = true;
+        }
 
-        let group = incoming.get(typeName);
+        const groupKey = splash ? `${typeName}~splash` : typeName;
+        let group = incoming.get(groupKey);
         if (!group) {
-          group = { count: 0, ticksArr: [], tiles: [], navs: [] };
-          incoming.set(typeName, group);
+          group = { key: groupKey, typeName, splashAll: splash, count: 0, ticksArr: [], tiles: [], navs: [] };
+          incoming.set(groupKey, group);
         }
         group.count++;
         group.tiles.push(targetTile);
@@ -1926,7 +2066,8 @@
     }
 
     const rows = [];
-    for (const [typeName, group] of incoming) {
+    for (const group of incoming.values()) {
+      const typeName = group.typeName;
       const secs = group.ticksArr;
       const secondsMin = secs.length > 0 ? Math.min(...secs) : null;
       const secondsMax = secs.length > 0 ? Math.max(...secs) : null;
@@ -1952,7 +2093,9 @@
       }
 
       rows.push({
+        key: group.key,
         nukeType: typeName,
+        splashAll: group.splashAll,
         count: group.count,
         secondsMin,
         secondsMax,
@@ -1984,7 +2127,7 @@
     countEl.textContent = String(row.count);
     const typeEl = document.createElement("span");
     typeEl.className = "of-nuke-tools-alert-type";
-    typeEl.textContent = alertTypeLabel(row.nukeType);
+    typeEl.textContent = alertTypeLabel(row.nukeType) + (row.splashAll ? " ~splash" : "");
     labelEl.appendChild(countEl);
     labelEl.appendChild(typeEl);
 
@@ -2084,6 +2227,32 @@
     return !has("MIRV") && has(MIRV_WARHEAD_TYPE);
   }
 
+  // Exact verdict for a vanished nuke row: match the losses against recent
+  // death events first (reachedTarget = landed, otherwise intercepted);
+  // anything unmatched falls back to the old last-timer heuristic.
+  function notifyNukeResolved(panel, info) {
+    const { nukeType, count, secondsMin: lastSecs, splashAll } = info;
+    const deaths = takeDeathEvents(nukeType, count);
+    const landed = deaths.filter(d => d.reachedTarget).length;
+    const intercepted = deaths.length - landed;
+    const unknown = count - deaths.length;
+    const label = alertTypeLabel(nukeType) + (splashAll ? " ~splash" : "");
+    const suffix = (n) => n > 1 ? ` ×${n}` : "";
+    if (landed > 0) {
+      addNotification(panel, "landed", `💥 ${label} Nuke landed${suffix(landed)}`);
+      return;
+    }
+    if (unknown === 0 && intercepted > 0) {
+      addNotification(panel, "intercepted", `☢ ${label} Intercepted!${suffix(intercepted)}`);
+      return;
+    }
+    if (lastSecs !== null && lastSecs > 0) {
+      addNotification(panel, "intercepted", `☢ ${label} Intercepted!`);
+    } else {
+      addNotification(panel, "landed", `💥 ${label} Nuke landed`);
+    }
+  }
+
   function syncIncomingNukeAlert() {
     if (!settings.incomingNukeAlert) {
       clearAlertPanel();
@@ -2106,31 +2275,22 @@
         // Order-independent signature: rows re-sort by remaining time every
         // scan, so a positional key would rebuild the panel whenever two
         // rows swap order.
-        const counts = new Map();
-        for (const r of newData) counts.set(r.nukeType, r.count);
-        const structKey = [...counts.keys()].sort()
-          .map(t => `${t}|${counts.get(t)}`)
-          .join(",");
-        const newNukeTypes = new Set(newData.map(r => r.nukeType));
+        const structKey = newData.map(r => `${r.key}|${r.count}`).sort().join(",");
+        const newNukeTypes = new Set(newData.map(r => r.key));
 
         if (structKey !== prevAlertData) {
           const splitToWarheads = mirvSplitHappened(newData);
-          for (const [oldType, oldData] of prevNukeData.entries()) {
-            if (!newNukeTypes.has(oldType)) {
+          for (const [oldKey, oldData] of prevNukeData.entries()) {
+            if (!newNukeTypes.has(oldKey)) {
               // A MIRV carrier "disappearing" while warheads appear means it
               // split — that's not an intercept or a landing.
-              if (oldType === "MIRV" && splitToWarheads) continue;
-              const lastSecs = oldData.secondsMin;
-              if (lastSecs !== null && lastSecs > 0) {
-                addNotification(panel, "intercepted", `☢ ${alertTypeLabel(oldType)} Intercepted!`);
-              } else {
-                addNotification(panel, "landed", `💥 ${alertTypeLabel(oldType)} Nuke landed`);
-              }
+              if (oldKey === "MIRV" && splitToWarheads) continue;
+              notifyNukeResolved(panel, oldData);
             }
           }
           prevNukeData.clear();
           for (const row of newData) {
-            prevNukeData.set(row.nukeType, { secondsMin: row.secondsMin });
+            prevNukeData.set(row.key, { nukeType: row.nukeType, splashAll: row.splashAll, secondsMin: row.secondsMin, count: row.count });
           }
           prevAlertData = structKey;
           panel.replaceChildren();
@@ -2145,18 +2305,18 @@
             for (const rowData of newData) {
               const rowObj = createAlertRow(rowData);
               panel.appendChild(rowObj.el);
-              currentAlertRows.set(rowData.nukeType, rowObj);
+              currentAlertRows.set(rowData.key, rowObj);
             }
           }
         } else {
           for (const rowData of newData) {
-            prevNukeData.set(rowData.nukeType, { secondsMin: rowData.secondsMin });
+            prevNukeData.set(rowData.key, { nukeType: rowData.nukeType, splashAll: rowData.splashAll, secondsMin: rowData.secondsMin, count: rowData.count });
           }
           if (newData.length === 0) {
             // nothing
           } else {
             for (const rowData of newData) {
-              const rowObj = currentAlertRows.get(rowData.nukeType);
+              const rowObj = currentAlertRows.get(rowData.key);
               if (rowObj) {
                 updateAlertRow(rowObj.el, rowData, rowObj.timerValueEl, rowObj.samEl);
               }
@@ -2193,6 +2353,13 @@
         min-width: 180px;
         max-width: 260px;
       }
+      .of-nuke-tools-panel-grip {
+        pointer-events: auto; cursor: grab; user-select: none;
+        -webkit-user-select: none; touch-action: none;
+        text-align: center; font-size: 9px; line-height: 1; color: #475569;
+        letter-spacing: 0.2em; padding: 3px 0 1px;
+      }
+      .of-nuke-tools-panel-grip:active { cursor: grabbing; color: #94a3b8; }
       .activity-row {
         display: flex;
         align-items: center;
@@ -2238,14 +2405,11 @@
 
   function ensureGlobalActivityPanel() {
     ensureGlobalActivityStyle();
-    let panel = document.getElementById(GLOBAL_ACTIVITY_PANEL_ID);
-    if (!panel) {
-      panel = document.createElement("div");
-      panel.id = GLOBAL_ACTIVITY_PANEL_ID;
-      panel.setAttribute("aria-label", "Global nuke activity");
-      (document.body || document.documentElement).appendChild(panel);
-    }
-    return panel;
+    // Returns the inner content div (see ensureAlertPanel); callers that wipe
+    // and rebuild rows keep working unchanged.
+    const { outer, content } = ensureDraggableShell(GLOBAL_ACTIVITY_PANEL_ID, ACTIVITY_POS_KEY);
+    outer.setAttribute("aria-label", "Global nuke activity");
+    return content;
   }
 
   function clearGlobalActivityPanel() {
@@ -2642,6 +2806,213 @@
     ensureMasterLoop();
   }
 
+  // === Player intel rows (hover overlay) ===
+  // Two lightweight rows on player-info-overlay, each behind its own
+  // sub-toggle: diplomacy badges (embargo / doomsday — things the game's own
+  // overlay never shows) and launcher readiness % (tube-level, including
+  // partial reload progress, next to the game's static counts).
+  let intelObservedOverlay = null;
+  let intelOverlayObserver = null;
+  let lastIntelScanAt = 0;
+  let lastIntelPlayerKey = null;
+  const INTEL_SCAN_MS = 500;
+
+  function getPlayerSamReadiness(game, player) {
+    const res = getGameUnitsCached(game, "SAM Launcher");
+    if (!res.available) return null;
+    const st = { sams: 0, totalTubes: 0, readyTubes: 0 };
+    const cd = getSamCooldownTicks(game);
+    for (const u of res.units) {
+      if (getUnitType(u) !== "SAM Launcher") continue;
+      const owner = getUnitOwner(u);
+      if (!owner || !isSamePlayer(owner, player)) continue;
+      if (callMethod(u, "isUnderConstruction") === true) continue;
+      const lvl = getUnitLevel(u);
+      st.sams++;
+      st.totalTubes += lvl;
+      st.readyTubes += Math.max(0, lvl - countBusyTubes(game, getMissileTimerQueue(u), cd));
+    }
+    return st;
+  }
+
+  function ensureIntelHover(game, overlay) {
+    const removeAll = () => {
+      removeOverlayRow(INTEL_DIPLOMACY_HOVER_ID);
+      removeOverlayRow(INTEL_READINESS_HOVER_ID);
+      removeOverlayRow(INTEL_TARGETS_HOVER_ID);
+      lastIntelPlayerKey = null;
+      lastIntelScanAt = 0;
+    };
+    if (!game || !overlay) { removeAll(); return; }
+    const player = readProperty(overlay, "player");
+    if (!player) { removeAll(); return; }
+    const card = overlay.querySelector('[class*="bg-gray-800"]');
+    if (!card) { removeAll(); return; }
+
+    const me = getMyPlayer(game);
+    const playerKey = getObjectId(player);
+    const now = performance.now();
+    // Recompute strings only on hover change or throttle expiry;
+    // ensureOverlayRow itself skips identical re-renders every frame.
+    if (playerKey !== lastIntelPlayerKey || now - lastIntelScanAt >= INTEL_SCAN_MS) {
+      lastIntelPlayerKey = playerKey;
+      lastIntelScanAt = now;
+
+      if (settings.intelDiplomacy) {
+        const segs = [];
+        let warn = false;
+        if (me && !isSamePlayer(me, player)) {
+          const iEmbargoThem = callMethod(me, "hasEmbargoAgainst", player) === true;
+          const theyEmbargoMe = callMethod(player, "hasEmbargoAgainst", me) === true;
+          if (iEmbargoThem && theyEmbargoMe) segs.push("🚫 Mutual embargo");
+          else if (iEmbargoThem) segs.push("🚫 You embargo them");
+          else if (theyEmbargoMe) { segs.push("🚫 They embargo you"); warn = true; }
+          else if (callMethod(me, "hasEmbargo", player) === true ||
+                   callMethod(player, "hasEmbargo", me) === true) {
+            segs.push("🚫 Embargo in place");
+          }
+        }
+        if (callMethod(player, "inDoomsdayClock") === true) {
+          segs.push(callMethod(player, "isDecaying") === true ? "☠ Decaying" : "☠ Doomsday clock");
+        }
+        if (segs.length) {
+          ensureOverlayRow(card, INTEL_DIPLOMACY_HOVER_ID, tradeRowClasses(false, warn),
+            "Diplomacy state the game's overlay doesn't show: embargoes in either direction, and whether they're on the doomsday clock.",
+            segs.join(" · "));
+        } else {
+          removeOverlayRow(INTEL_DIPLOMACY_HOVER_ID);
+        }
+      }
+
+      if (settings.intelReadinessPct) {
+        const segs = [];
+        const sam = getPlayerSamReadiness(game, player);
+        if (sam && sam.totalTubes > 0) {
+          segs.push(`🛡 SAM ${Math.round((100 * sam.readyTubes) / sam.totalTubes)}%`);
+        }
+        const silo = getPlayerSiloReadiness(game, player);
+        if (silo && silo.total > 0) {
+          segs.push(`☢ silos ${Math.round((100 * silo.ready) / silo.total)}%`);
+        }
+        if (segs.length) {
+          ensureOverlayRow(card, INTEL_READINESS_HOVER_ID, tradeRowClasses(false),
+            "Share of their launcher tubes actually ready to fire right now (counts tubes still reloading as not ready).",
+            segs.join(" · "));
+        } else {
+          removeOverlayRow(INTEL_READINESS_HOVER_ID);
+        }
+      }
+    }
+
+    if (settings.intelTargets) {
+      const names = getPlayerTargetNames(player);
+      if (names.length) {
+        const shown = names.slice(0, 4);
+        if (names.length > 4) shown.push(`+${names.length - 4} more`);
+        ensureOverlayRow(card, INTEL_TARGETS_HOVER_ID, tradeRowClasses(false),
+          "Players this player is currently attacking.",
+          `🎯 Targeting: ${shown.join(", ")}`);
+      } else {
+        removeOverlayRow(INTEL_TARGETS_HOVER_ID);
+      }
+    } else {
+      removeOverlayRow(INTEL_TARGETS_HOVER_ID);
+    }
+
+    if (!settings.intelDiplomacy) removeOverlayRow(INTEL_DIPLOMACY_HOVER_ID);
+    if (!settings.intelReadinessPct) removeOverlayRow(INTEL_READINESS_HOVER_ID);
+    if (!settings.intelTargets) removeOverlayRow(INTEL_TARGETS_HOVER_ID);
+  }
+
+  // Names of players this player is currently attacking (their `targets`
+  // list). Guarded throughout — a failed lookup just yields no row.
+  function getPlayerTargetNames(player) {
+    const out = [];
+    try {
+      const targets = callMethod(player, "targets");
+      if (!Array.isArray(targets)) return out;
+      for (const t of targets) {
+        if (!t) continue;
+        const n = callMethod(t, "displayName") ?? callMethod(t, "name");
+        const s = (n === undefined || n === null) ? "" : String(n).trim();
+        if (s) out.push(s);
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  function setupIntelObserver(game) {
+    const overlay = document.querySelector("player-info-overlay");
+    if (overlay === intelObservedOverlay) return;
+    if (intelOverlayObserver) {
+      intelOverlayObserver.disconnect();
+      intelOverlayObserver = null;
+    }
+    intelObservedOverlay = overlay;
+    if (!overlay) return;
+    intelOverlayObserver = new MutationObserver((mutations) => {
+      let foreign = false;
+      for (const m of mutations) {
+        if (m.target && (m.target.id === INTEL_DIPLOMACY_HOVER_ID || m.target.id === INTEL_READINESS_HOVER_ID || m.target.id === INTEL_TARGETS_HOVER_ID)) continue;
+        foreign = true;
+        break;
+      }
+      if (!foreign) return;
+      ensureIntelHover(getGameContext()?.game, overlay);
+    });
+    intelOverlayObserver.observe(overlay, { childList: true, subtree: true });
+    ensureIntelHover(game, overlay);
+  }
+
+  function teardownIntelHover() {
+    if (intelOverlayObserver) {
+      intelOverlayObserver.disconnect();
+      intelOverlayObserver = null;
+    }
+    intelObservedOverlay = null;
+    removeOverlayRow(INTEL_DIPLOMACY_HOVER_ID);
+    removeOverlayRow(INTEL_READINESS_HOVER_ID);
+    removeOverlayRow(INTEL_TARGETS_HOVER_ID);
+    lastIntelPlayerKey = null;
+    lastIntelScanAt = 0;
+  }
+
+  function anyIntelFeature() {
+    return settings.intelDiplomacy || settings.intelReadinessPct || settings.intelTargets;
+  }
+
+  function syncIntelHover() {
+    if (!anyIntelFeature()) {
+      teardownIntelHover();
+      return;
+    }
+    const context = getGameContext();
+    if (!context?.game || !isGameActive(context.game)) {
+      teardownIntelHover();
+    } else {
+      setupIntelObserver(context.game);
+      ensureIntelHover(context.game, document.querySelector("player-info-overlay"));
+    }
+  }
+
+  function setIntelDiplomacyEnabled(enabled) {
+    settings.intelDiplomacy = !!enabled;
+    if (!anyIntelFeature()) teardownIntelHover();
+    ensureMasterLoop();
+  }
+
+  function setIntelReadinessPctEnabled(enabled) {
+    settings.intelReadinessPct = !!enabled;
+    if (!anyIntelFeature()) teardownIntelHover();
+    ensureMasterLoop();
+  }
+
+  function setIntelTargetsEnabled(enabled) {
+    settings.intelTargets = !!enabled;
+    if (!anyIntelFeature()) teardownIntelHover();
+    ensureMasterLoop();
+  }
+
   // === Trade partner rows (hover overlay) ===
   // Injects extra rows into player-info-overlay while you hover someone.
   // Income = gold you get from trading with them (their ships to your ports,
@@ -2991,7 +3362,8 @@
         title = "Measured from their gold changes over the last 60 s.";
       } else {
         text = `💰 Income: +${formatGold(gross.perSec)}/s · +${formatGold(gross.perMin)}/min`;
-        // Source split, mirroring the local panel: base from Config, then
+        // Source split, mirroring the local panel: base from Config, then the
+        // engine's own cumulative counters when they arrive (exact), else
         // detected port/warship/factory payouts scaled to cover whatever the
         // sampled total earns beyond base.
         const baseInfo = tryReadDirectIncome(game, player);
@@ -2999,25 +3371,33 @@
         const hasBase = Number.isFinite(basePerSec) && basePerSec > 0;
         const segs = [];
         if (hasBase) segs.push(`base ${formatGold(basePerSec)}`);
-        const split = otherSplitEvents.get(pid);
-        if (split) {
-          let ports = eventRate(split.ports);
-          let war = eventRate(split.warships);
-          let fac = eventRate(split.factories);
-          const extra = hasBase ? gross.perSec - basePerSec : 0;
-          const sum = ports + war + fac;
-          if (extra > 0 && sum > 0) {
-            const scale = extra / sum;
-            ports *= scale;
-            war *= scale;
-            fac *= scale;
+        const exactBuckets = counterSplitFromSamples(rec?.samples);
+        let ports = 0, war = 0, fac = 0, isExact = false;
+        if (exactBuckets) {
+          ports = exactBuckets.ports; war = exactBuckets.warships; fac = exactBuckets.factories;
+          isExact = true;
+        } else {
+          const split = otherSplitEvents.get(pid);
+          if (split) {
+            ports = eventRate(split.ports);
+            war = eventRate(split.warships);
+            fac = eventRate(split.factories);
+            const extra = hasBase ? gross.perSec - basePerSec : 0;
+            const sum = ports + war + fac;
+            if (extra > 0 && sum > 0) {
+              const scale = extra / sum;
+              ports *= scale;
+              war *= scale;
+              fac *= scale;
+            }
           }
-          if (ports >= 1) segs.push(`⚓ ${formatGold(ports)}/s`);
-          if (war >= 1) segs.push(`💥 ${formatGold(war)}/s`);
-          if (fac >= 1) segs.push(`🏭 ${formatGold(fac)}/s`);
         }
+        if (ports >= 1) segs.push(`⚓ ${formatGold(ports)}/s`);
+        if (war >= 1) segs.push(`💥 ${formatGold(war)}/s`);
+        if (fac >= 1) segs.push(`🏭 ${formatGold(fac)}/s`);
         if (segs.length > 0) text += ` — ${segs.join(" · ")}`;
-        title = "Their measured gold income over the last 60 s (same model as your Gold Income panel). Breakdown: base = passive rate from the lobby settings · ⚓ ports = trade ships that arrived at their ports or theirs arriving elsewhere · 💥 warships = trade ships their warships captured and brought in · 🏭 factories = train stops that paid them (their trains stopping anywhere, plus other trains stopping at their cities/ports). Estimated from detected payouts.";
+        title = "Their measured gold income over the last 60 s (same model as your Gold Income panel). Breakdown: base = passive rate from the lobby settings · ⚓ ports = trade ships that arrived at their ports or theirs arriving elsewhere · 💥 warships = trade ships their warships captured and brought in · 🏭 factories = train stops that paid them (their trains stopping anywhere, plus other trains stopping at their cities/ports)." +
+          (isExact ? " Split read from the game's own per-source counters." : " Split estimated from detected payouts.");
       }
       ensureOverlayRow(card, GOLD_INCOME_HOVER_ID, tradeRowClasses(false), title, text);
     } else {
@@ -3160,6 +3540,89 @@
       x: Math.max(4, Math.min(Math.round(x), Math.max(4, vw - 170))),
       y: Math.max(4, Math.min(Math.round(y), Math.max(4, vh - 70))),
     };
+  }
+
+  // Shared drag support for the alert + airspace panels (the gold/troop
+  // panels have their own bespoke versions). Only a slim grip bar is
+  // grabbable — the rest of the panel stays click-through so it never eats
+  // game input. Positions persist in localStorage like the other panels.
+  const ALERT_POS_KEY = "of-nuke-tools-alert-pos";
+  const ACTIVITY_POS_KEY = "of-nuke-tools-activity-pos";
+
+  function applySavedPanelPos(outer, posKey) {
+    try {
+      const p = JSON.parse(localStorage.getItem(posKey) || "null");
+      if (p && typeof p.x === "number" && typeof p.y === "number") {
+        const c = clampPanelPos(p.x, p.y);
+        outer.style.left = `${c.x}px`;
+        outer.style.top = `${c.y}px`;
+        outer.style.right = "auto";
+        outer.style.bottom = "auto";
+      }
+    } catch (_) {}
+  }
+
+  function makePanelDraggable(outer, grip, posKey) {
+    let dragging = false, offX = 0, offY = 0;
+    grip.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      // Convert bottom/right-anchored defaults to explicit left/top once.
+      const rect = outer.getBoundingClientRect();
+      outer.style.left = `${Math.round(rect.left)}px`;
+      outer.style.top = `${Math.round(rect.top)}px`;
+      outer.style.right = "auto";
+      outer.style.bottom = "auto";
+      dragging = true;
+      offX = e.clientX - rect.left;
+      offY = e.clientY - rect.top;
+      try { grip.setPointerCapture(e.pointerId); } catch (_) {}
+      outer.style.opacity = "0.85";
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    grip.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const pos = clampPanelPos(e.clientX - offX, e.clientY - offY);
+      outer.style.left = `${pos.x}px`;
+      outer.style.top = `${pos.y}px`;
+    });
+    const end = () => {
+      if (!dragging) return;
+      dragging = false;
+      outer.style.opacity = "";
+      try {
+        localStorage.setItem(posKey, JSON.stringify({
+          x: parseFloat(outer.style.left),
+          y: parseFloat(outer.style.top),
+        }));
+      } catch (_) {}
+    };
+    grip.addEventListener("pointerup", end);
+    grip.addEventListener("pointercancel", end);
+  }
+
+  // Builds (once) the outer positioned shell + grip bar shared by the
+  // draggable panels. Returns { outer, content }; all row rendering targets
+  // `content` so rebuilds never wipe the grip or position.
+  function ensureDraggableShell(panelId, posKey) {
+    let outer = document.getElementById(panelId);
+    if (!outer) {
+      outer = document.createElement("div");
+      outer.id = panelId;
+      const grip = document.createElement("div");
+      grip.className = "of-nuke-tools-panel-grip";
+      grip.title = "Drag to move";
+      grip.textContent = "⋮⋮";
+      const content = document.createElement("div");
+      content.className = "of-nuke-tools-panel-content";
+      content.style.cssText = "display:flex;flex-direction:column;gap:inherit;min-width:0;";
+      outer.appendChild(grip);
+      outer.appendChild(content);
+      (document.body || document.documentElement).appendChild(outer);
+      applySavedPanelPos(outer, posKey);
+      makePanelDraggable(outer, grip, posKey);
+    }
+    return { outer, content: outer.querySelector(":scope > .of-nuke-tools-panel-content") || outer };
   }
 
   function loadGoldPanelPos() {
@@ -3323,7 +3786,8 @@
       }
     }
     const lootHold = now < lootHoldUntil;
-    goldSampleHistory.push({ gold: g, ts: now, lootHold });
+    const counters = readGoldCounters(me);
+    goldSampleHistory.push({ gold: g, ts: now, lootHold, ...counters });
     const cutoff = now - GOLD_SAMPLE_WINDOW_MS;
     while (goldSampleHistory.length > 1 && goldSampleHistory[1].ts < cutoff) {
       goldSampleHistory.shift();
@@ -3522,7 +3986,7 @@
         rec = { samples: [] };
         otherGoldTrackers.set(pid, rec);
       }
-      rec.samples.push({ gold: g, ts: now });
+      rec.samples.push({ gold: g, ts: now, ...readGoldCounters(p) });
       const cutoff = now - GOLD_SAMPLE_WINDOW_MS;
       while (rec.samples.length > 2 && rec.samples[1].ts < cutoff) {
         rec.samples.shift();
@@ -3780,19 +4244,59 @@
     return grossRateFromSamples(goldSampleHistory);
   }
 
+  // Exact per-source rates from the engine's own cumulative counters
+  // (tradeGold = ships, trainGold = trains, piracyGold = captures). Returns
+  // null until the window holds usable counter data, so callers fall back to
+  // event detection on clients that don't expose them.
+  function counterSplitFromSamples(samples) {
+    if (!samples || samples.length < 2) return null;
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    const elapsedSec = (last.ts - first.ts) / 1000;
+    if (!(elapsedSec >= 2)) return null;
+    const keys = [["trade", "ports"], ["piracy", "warships"], ["train", "factories"]];
+    const out = {};
+    for (const [field, bucket] of keys) {
+      const a = first[field], b = last[field];
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+      out[bucket] = Math.max(0, b - a) / elapsedSec;
+    }
+    return out;
+  }
+
+  // Read the engine's cumulative per-source counters for one player (nulls
+  // when the client doesn't expose them).
+  function readGoldCounters(p) {
+    if (!p) return { trade: null, train: null, piracy: null };
+    return {
+      trade: toFiniteNumber(callMethod(p, "tradeGold"), null),
+      train: toFiniteNumber(callMethod(p, "trainGold"), null),
+      piracy: toFiniteNumber(callMethod(p, "piracyGold"), null),
+    };
+  }
+
   function computeGoldRates(game) {
     // Sampled gross is the trustworthy total; the split only apportions it, so
     // a tracking miss never drops the number — worst case the label degrades.
     const me = getMyPlayer(game);
     const gross = computeGoldGrossRate();
     const split = me ? measureSourceSplit(game, me) : null;
+    // Prefer the engine's own cumulative counters when they arrive — exact
+    // per-source rates, no payout detection involved. Otherwise fall back to
+    // the event-based estimates (still needed for per-partner attribution).
+    const exact = counterSplitFromSamples(goldSampleHistory);
     if (split) {
       const basePerSec = split.basePerSec;
-      let ports = split.ports, warships = split.warships, factories = split.factories;
-      if (gross && gross.perSec > basePerSec) {
-        const extra = gross.perSec - basePerSec;
-        const sum = ports + warships + factories;
-        if (sum > 0) { const scale = extra / sum; ports *= scale; warships *= scale; factories *= scale; }
+      let ports, warships, factories;
+      if (exact) {
+        ports = exact.ports; warships = exact.warships; factories = exact.factories;
+      } else {
+        ports = split.ports; warships = split.warships; factories = split.factories;
+        if (gross && gross.perSec > basePerSec) {
+          const extra = gross.perSec - basePerSec;
+          const sum = ports + warships + factories;
+          if (sum > 0) { const scale = extra / sum; ports *= scale; warships *= scale; factories *= scale; }
+        }
       }
       const totalPerSec = gross ? gross.perSec : basePerSec + ports + warships + factories;
       return {
@@ -4356,6 +4860,7 @@
     return settings.samCoverage || settings.nukeGrouper || settings.teammateMarkers ||
       settings.incomingNukeAlert || settings.globalNukeActivity || settings.personalNukeTracker ||
       settings.enemyNukeReadiness ||
+      settings.intelDiplomacy || settings.intelReadinessPct || settings.intelTargets ||
       settings.tradeIncome || settings.tradeCaptures || settings.tradeTransports || settings.tradeWarships ||
       settings.overlayTroopRate || settings.overlayGoldIncome ||
       settings.buildProgress ||
@@ -4372,6 +4877,7 @@
     if (alertPanelVisible) clearAlertPanel();
     if (globalActivityPanelVisible) clearGlobalActivityPanel();
     teardownEnemyNukesHover();
+    teardownIntelHover();
     teardownTradePartnerHover();
     removeStatsRows();
     otherGoldTrackers.clear();
@@ -4414,6 +4920,10 @@
     }
     masterWasInGame = true;
 
+    // Drain per-tick death events for exact alert verdicts (the throttled
+    // 400ms scan below would miss deaths on the ticks in between).
+    if (settings.incomingNukeAlert && context?.game) drainDeathEvents(context.game);
+
     if (now - lastMasterWorkAt < MASTER_WORK_MS) {
       masterLoopFrame = requestAnimationFrame(runMasterLoop);
       return;
@@ -4431,6 +4941,7 @@
       if (settings.incomingNukeAlert) syncIncomingNukeAlert();
       if (settings.globalNukeActivity) syncGlobalNukeActivity();
       if (settings.enemyNukeReadiness) syncEnemyNukes();
+      if (settings.intelDiplomacy || settings.intelReadinessPct || settings.intelTargets) syncIntelHover();
       if (settings.tradeIncome || settings.tradeCaptures || settings.tradeTransports || settings.tradeWarships ||
           settings.overlayTroopRate || settings.overlayGoldIncome) syncTradePartnerIncome();
       if (settings.goldPerSecond || settings.goldPerMinute) syncGoldIncome();
@@ -4470,6 +4981,9 @@
     setGlobalNukeActivityEnabled(Boolean(src.globalNukeActivity));
     setPersonalNukeTrackerEnabled(Boolean(src.personalNukeTracker));
     setEnemyNukeReadinessEnabled(Boolean(src.enemyNukeReadiness));
+    setIntelDiplomacyEnabled(Boolean(src.intelDiplomacy));
+    setIntelReadinessPctEnabled(Boolean(src.intelReadinessPct));
+    setIntelTargetsEnabled(Boolean(src.intelTargets));
     setTradeIncomeEnabled(Boolean(src.tradeIncome));
     setTradeCapturesEnabled(Boolean(src.tradeCaptures));
     setTradeTransportsEnabled(Boolean(src.tradeTransports));

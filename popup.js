@@ -5,6 +5,7 @@
   const browser = globalThis.browser ?? globalThis.chrome;
 
   const STORAGE_KEY = "openfrontNukeToolsSettings";
+  const UI_KEY = "openfrontPlusUi";
   const DEFAULT_SETTINGS = Object.freeze({
     samCoverage: true,
     nukeGrouper: true,
@@ -13,6 +14,9 @@
     globalNukeActivity: true,
     personalNukeTracker: true,
     enemyNukeReadiness: false,
+    intelDiplomacy: true,
+    intelReadinessPct: true,
+    intelTargets: true,
     tradeIncome: true,
     tradeCaptures: false,
     tradeTransports: false,
@@ -33,6 +37,32 @@
   const touchedIds = new Set();
   function markTouched(...ids) {
     for (const id of ids) touchedIds.add(id);
+  }
+
+  /* Collapsible groups: master switch reflects "any sub on", flipping the
+   * master flips all subs. Masters NOT in SETTING_IDS are derived-only. */
+  const GROUP_DEFS = [
+    { name: "airspace", master: "globalNukeActivity", subs: ["personalNukeTracker"], lockSubsWhenOff: true },
+    { name: "tradePartner", master: "tradePartner", subs: ["tradeIncome", "tradeCaptures", "tradeTransports", "tradeWarships"] },
+    { name: "playerIntel", master: "playerIntel", subs: ["intelDiplomacy", "intelReadinessPct", "intelTargets"] },
+    { name: "playerStats", master: "playerStatsOverlay", subs: ["overlayTroopRate", "overlayGoldIncome"] },
+    { name: "goldIncome", master: "goldIncome", subs: ["goldPerSecond", "goldPerMinute"] },
+    { name: "troopRate", master: "troopRate", subs: ["troopPerSecond", "troopPerMinute"] },
+  ];
+
+  /* Sections for grouping + per-section on-counts. */
+  const SECTIONS = {
+    nukes: ["samCoverage", "nukeGrouper", "incomingNukeAlert", "globalNukeActivity", "personalNukeTracker", "enemyNukeReadiness"],
+    economy: ["tradeIncome", "tradeCaptures", "tradeTransports", "tradeWarships", "overlayTroopRate", "overlayGoldIncome", "goldPerSecond", "goldPerMinute", "troopPerSecond", "troopPerMinute", "intelDiplomacy", "intelReadinessPct", "intelTargets"],
+    map: ["teammateMarkers", "buildProgress"],
+  };
+
+  /* Persisted UI state (which groups/sections are expanded). Defaults open. */
+  let uiState = { groups: {}, sections: {} };
+  function saveUiState() {
+    try {
+      browser.storage.local.set({ [UI_KEY]: uiState });
+    } catch (_) {}
   }
 
   function normalizeSettings(value) {
@@ -75,175 +105,120 @@
         input.checked = Boolean(settings[id]);
       }
     }
-    updateDependencies();
+    refreshAll();
   }
 
-  /* toggle dependency handling */
-
-  function updateDependencies() {
-    updateAirspaceState();
-    updateTradePartnerState();
-    updatePlayerStatsState();
-    updateGoldIncomeState();
-    updateTroopRateState();
+  function getInput(id) {
+    return document.getElementById(id);
   }
 
-  function updatePlayerStatsState() {
-    const mainToggle = document.getElementById("playerStatsOverlay");
-    if (!mainToggle) return;
-    mainToggle.checked =
-      (document.getElementById("overlayTroopRate")?.checked || false) ||
-      (document.getElementById("overlayGoldIncome")?.checked || false);
-  }
+  /* ---------- groups ---------- */
 
-  function updateTradePartnerState() {
-    const mainToggle = document.getElementById("tradePartner");
-    if (!mainToggle) return;
-    mainToggle.checked =
-      (document.getElementById("tradeIncome")?.checked || false) ||
-      (document.getElementById("tradeCaptures")?.checked || false) ||
-      (document.getElementById("tradeTransports")?.checked || false) ||
-      (document.getElementById("tradeWarships")?.checked || false);
-  }
+  function setupGroup(def) {
+    const root = document.querySelector(`[data-group="${def.name}"]`);
+    if (!root) return;
+    const master = getInput(def.master);
+    const subs = def.subs.map(getInput).filter(Boolean);
+    const expander = root.querySelector(".group-expander");
+    const subsBox = root.querySelector(".sub-toggles");
 
-  function updateAirspaceState() {
-    const globalInput = document.getElementById("globalNukeActivity");
-    const personalInput = document.getElementById("personalNukeTracker");
-    const lockIcon = document.getElementById("lockIcon");
-    if (!globalInput || !personalInput) return;
-
-    if (!globalInput.checked) {
-      personalInput.disabled = true;
-      personalInput.checked = false;
-      markTouched("personalNukeTracker");
-      if (lockIcon) lockIcon.style.display = "";
-    } else {
-      personalInput.disabled = false;
-      if (lockIcon) lockIcon.style.display = "none";
+    if (expander && subsBox) {
+      expander.addEventListener("click", () => {
+        const open = !subsBox.classList.contains("open");
+        subsBox.classList.toggle("open", open);
+        expander.classList.toggle("open", open);
+        expander.setAttribute("aria-expanded", String(open));
+        uiState.groups[def.name] = open;
+        saveUiState();
+      });
+    }
+    if (master) {
+      master.addEventListener("change", () => {
+        const on = master.checked;
+        if (SETTING_IDS.includes(def.master)) markTouched(def.master);
+        for (const s of subs) {
+          s.checked = on;
+          markTouched(s.id);
+        }
+        saveSettings();
+        refreshAll();
+      });
     }
   }
 
-  function toggleAirspaceSubs() {
-    const subs = document.getElementById("airspaceSubs");
-    const arrow = document.getElementById("airspaceArrow");
-    if (!subs || !arrow) return;
-    const isOpen = subs.classList.toggle("open");
-    arrow.classList.toggle("open", isOpen);
-    arrow.textContent = isOpen ? "▼" : "▶";
-  }
-
-  function updateGoldIncomeState() {
-    const perSecond = document.getElementById("goldPerSecond");
-    const perMinute = document.getElementById("goldPerMinute");
-    const mainToggle = document.getElementById("goldIncome");
-    if (!perSecond || !perMinute || !mainToggle) return;
-    mainToggle.checked = perSecond.checked || perMinute.checked;
-    mainToggle.disabled = false;
-  }
-
-  function updateTroopRateState() {
-    const perSecond = document.getElementById("troopPerSecond");
-    const perMinute = document.getElementById("troopPerMinute");
-    const mainToggle = document.getElementById("troopRate");
-    if (!perSecond || !perMinute || !mainToggle) return;
-    mainToggle.checked = perSecond.checked || perMinute.checked;
-    mainToggle.disabled = false;
-  }
-
-  function toggleGoldIncomeSubs() {
-    const subs = document.getElementById("goldIncomeSubs");
-    const arrow = document.getElementById("goldIncomeArrow");
-    if (!subs || !arrow) return;
-    const isOpen = subs.classList.toggle("open");
-    arrow.classList.toggle("open", isOpen);
-    arrow.textContent = isOpen ? "▼" : "▶";
-  }
-
-  function goldIncomeMainClicked() {
-    const mainToggle = document.getElementById("goldIncome");
-    const perSecond = document.getElementById("goldPerSecond");
-    const perMinute = document.getElementById("goldPerMinute");
-    if (!mainToggle || !perSecond || !perMinute) return;
-    const newState = mainToggle.checked;
-    perSecond.checked = newState;
-    perMinute.checked = newState;
-    markTouched("goldPerSecond", "goldPerMinute");
-    saveSettings();
-    updateGoldIncomeState();
-  }
-
-  function toggleTroopRateSubs() {
-    const subs = document.getElementById("troopRateSubs");
-    const arrow = document.getElementById("troopRateArrow");
-    if (!subs || !arrow) return;
-    const isOpen = subs.classList.toggle("open");
-    arrow.classList.toggle("open", isOpen);
-    arrow.textContent = isOpen ? "▼" : "▶";
-  }
-
-  function troopRateMainClicked() {
-    const mainToggle = document.getElementById("troopRate");
-    const perSecond = document.getElementById("troopPerSecond");
-    const perMinute = document.getElementById("troopPerMinute");
-    if (!mainToggle || !perSecond || !perMinute) return;
-    const newState = mainToggle.checked;
-    perSecond.checked = newState;
-    perMinute.checked = newState;
-    markTouched("troopPerSecond", "troopPerMinute");
-    saveSettings();
-    updateTroopRateState();
-  }
-
-  function toggleTradePartnerSubs() {
-    const subs = document.getElementById("tradePartnerSubs");
-    const arrow = document.getElementById("tradePartnerArrow");
-    if (!subs || !arrow) return;
-    const isOpen = subs.classList.toggle("open");
-    arrow.classList.toggle("open", isOpen);
-    arrow.textContent = isOpen ? "▼" : "▶";
-  }
-
-  function tradePartnerMainClicked() {
-    const mainToggle = document.getElementById("tradePartner");
-    const subs = [
-      "tradeIncome",
-      "tradeCaptures",
-      "tradeTransports",
-      "tradeWarships",
-    ];
-    if (!mainToggle) return;
-    const newState = mainToggle.checked;
-    for (const id of subs) {
-      const input = document.getElementById(id);
-      if (input) input.checked = newState;
+  function refreshGroup(def) {
+    const master = getInput(def.master);
+    if (!master) return;
+    const subs = def.subs.map(getInput).filter(Boolean);
+    if (!SETTING_IDS.includes(def.master)) {
+      master.checked = subs.some((s) => s.checked);
     }
-    markTouched(...subs);
-    saveSettings();
-    updateTradePartnerState();
-  }
-
-  function togglePlayerStatsSubs() {
-    const subs = document.getElementById("playerStatsSubs");
-    const arrow = document.getElementById("playerStatsArrow");
-    if (!subs || !arrow) return;
-    const isOpen = subs.classList.toggle("open");
-    arrow.classList.toggle("open", isOpen);
-    arrow.textContent = isOpen ? "▼" : "▶";
-  }
-
-  function playerStatsMainClicked() {
-    const mainToggle = document.getElementById("playerStatsOverlay");
-    const subs = ["overlayTroopRate", "overlayGoldIncome"];
-    if (!mainToggle) return;
-    const newState = mainToggle.checked;
-    for (const id of subs) {
-      const input = document.getElementById(id);
-      if (input) input.checked = newState;
+    if (def.lockSubsWhenOff) {
+      const locked = !master.checked;
+      for (const s of subs) {
+        s.disabled = locked;
+        s.title = locked ? "Enable Show Nukes in Airspace first" : "";
+      }
     }
-    markTouched(...subs);
-    saveSettings();
-    updatePlayerStatsState();
   }
+
+  function refreshAll() {
+    for (const def of GROUP_DEFS) refreshGroup(def);
+    updateCounts();
+  }
+
+  function applyGroupOpenStates() {
+    for (const def of GROUP_DEFS) {
+      const root = document.querySelector(`[data-group="${def.name}"]`);
+      if (!root) continue;
+      const open = uiState.groups[def.name] !== false;
+      const subsBox = root.querySelector(".sub-toggles");
+      const expander = root.querySelector(".group-expander");
+      if (subsBox) subsBox.classList.toggle("open", open);
+      if (expander) {
+        expander.classList.toggle("open", open);
+        expander.setAttribute("aria-expanded", String(open));
+      }
+    }
+  }
+
+  /* ---------- sections ---------- */
+
+  function setupSections() {
+    document.querySelectorAll("[data-section]").forEach((sec) => {
+      const btn = sec.querySelector(".section-header");
+      if (!btn) return;
+      btn.addEventListener("click", () => {
+        const open = !sec.classList.contains("open");
+        sec.classList.toggle("open", open);
+        btn.setAttribute("aria-expanded", String(open));
+        uiState.sections[sec.dataset.section] = open;
+        saveUiState();
+      });
+    });
+  }
+
+  function applySectionOpenStates() {
+    document.querySelectorAll("[data-section]").forEach((sec) => {
+      const open = uiState.sections[sec.dataset.section] !== false;
+      sec.classList.toggle("open", open);
+      sec.querySelector(".section-header")?.setAttribute("aria-expanded", String(open));
+    });
+  }
+
+  function updateCounts() {
+    let totalOn = 0;
+    for (const [name, ids] of Object.entries(SECTIONS)) {
+      const on = ids.filter((id) => getInput(id)?.checked).length;
+      totalOn += on;
+      const el = document.querySelector(`[data-section-count="${name}"]`);
+      if (el) el.textContent = `${on}/${ids.length}`;
+    }
+    const countEl = document.getElementById("enabledCount");
+    if (countEl) countEl.textContent = `${totalOn} of ${SETTING_IDS.length} on`;
+  }
+
+  /* ---------- persistence ---------- */
 
   async function saveSettings() {
     try {
@@ -268,134 +243,19 @@
     }, 1100);
   }
 
-  function showDisabledMessage() {
-    window.clearTimeout(savedMessageTimer);
-    status.textContent = "Cannot enable 'Show Your Nukes' without 'Show Nukes in Airspace' enabled.";
-    status.classList.remove("saved");
-    status.classList.add("error");
-    savedMessageTimer = window.setTimeout(() => {
-      status.textContent = "Settings are stored locally. You won't need to redo them.";
-      status.classList.remove("error");
-    }, 2500);
-  }
-
-  // Attach change listeners
-  for (const id of SETTING_IDS) {
-    const input = document.getElementById(id);
-    if (!input) continue;
-
-    // Record explicit user intent before any handler saves.
-    input.addEventListener("change", () => { markTouched(id); });
-
-    if (id === "goldPerSecond" || id === "goldPerMinute") {
-      input.addEventListener("change", () => {
-        saveSettings();
-        updateGoldIncomeState();
-      });
-    } else if (id === "troopPerSecond" || id === "troopPerMinute") {
-      input.addEventListener("change", () => {
-        saveSettings();
-        updateTroopRateState();
-      });
-    } else if (id === "tradeIncome" || id === "tradeCaptures" ||
-               id === "tradeTransports" || id === "tradeWarships") {
-      input.addEventListener("change", () => {
-        saveSettings();
-        updateTradePartnerState();
-      });
-    } else if (id === "overlayTroopRate" || id === "overlayGoldIncome") {
-      input.addEventListener("change", () => {
-        saveSettings();
-        updatePlayerStatsState();
-      });
-    } else if (id === "globalNukeActivity") {
-      input.addEventListener("change", () => {
-        updateDependencies();
-        saveSettings();
-      });
-    } else {
-      input.addEventListener("change", saveSettings);
-    }
-  }
-
-  // Collapse/expand
-  const goldIncomeArrowBtn = document.getElementById("goldIncomeArrow");
-  if (goldIncomeArrowBtn) {
-    goldIncomeArrowBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      toggleGoldIncomeSubs();
-    });
-  }
-
-  // Main gold toggle
-  const goldIncomeToggle = document.getElementById("goldIncome");
-  if (goldIncomeToggle) {
-    goldIncomeToggle.addEventListener("change", goldIncomeMainClicked);
-  }
-
-  // Troop rate collapse/expand
-  const troopRateArrowBtn = document.getElementById("troopRateArrow");
-  if (troopRateArrowBtn) {
-    troopRateArrowBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      toggleTroopRateSubs();
-    });
-  }
-
-  // Main troop toggle
-  const troopRateToggle = document.getElementById("troopRate");
-  if (troopRateToggle) {
-    troopRateToggle.addEventListener("change", troopRateMainClicked);
-  }
-
-  // Trade partner collapse/expand
-  const tradePartnerArrowBtn = document.getElementById("tradePartnerArrow");
-  if (tradePartnerArrowBtn) {
-    tradePartnerArrowBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      toggleTradePartnerSubs();
-    });
-  }
-
-  // Main trade partner toggle
-  const tradePartnerToggle = document.getElementById("tradePartner");
-  if (tradePartnerToggle) {
-    tradePartnerToggle.addEventListener("change", tradePartnerMainClicked);
-  }
-
-  // Player stats collapse/expand + main toggle
-  const playerStatsArrowBtn = document.getElementById("playerStatsArrow");
-  if (playerStatsArrowBtn) {
-    playerStatsArrowBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      togglePlayerStatsSubs();
-    });
-  }
-  const playerStatsToggle = document.getElementById("playerStatsOverlay");
-  if (playerStatsToggle) {
-    playerStatsToggle.addEventListener("change", playerStatsMainClicked);
-  }
-
-  // Disabled personal tracker click
-  const personalCard = document.getElementById("personalNukeTrackerCard");
-  if (personalCard) {
-    personalCard.addEventListener("click", (e) => {
-      const personalInput = document.getElementById("personalNukeTracker");
-      if (personalInput && personalInput.disabled) {
-        e.preventDefault();
-        showDisabledMessage();
+  function setAll(on) {
+    for (const id of SETTING_IDS) {
+      const input = getInput(id);
+      if (input) {
+        input.checked = on;
+        markTouched(id);
       }
-    });
+    }
+    saveSettings();
+    refreshAll();
   }
 
-  // Airspace collapse/expand — button only, so checkbox works independently
-  const airspaceArrowBtn = document.getElementById("airspaceArrow");
-  if (airspaceArrowBtn) {
-    airspaceArrowBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      toggleAirspaceSubs();
-    });
-  }
+  /* ---------- diagnostics ---------- */
 
   function renderBridgeInfo() {
     browser.storage.local
@@ -403,8 +263,9 @@
       .then((stored) => {
         const events = Array.isArray(stored.openfrontPlusEvents) ? stored.openfrontPlusEvents : [];
         const boots = Array.isArray(stored.openfrontPlusBoots) ? stored.openfrontPlusBoots : [];
-        const wrap = document.createElement("div");
-        wrap.style.cssText = "margin-top:10px;font-size:10px;color:#94a3b8;line-height:1.6;";
+        const body = document.getElementById("diagBody");
+        if (!body) return;
+        body.replaceChildren();
         const line = document.createElement("div");
         if (boots.length > 0) {
           const last = boots[boots.length - 1];
@@ -413,24 +274,79 @@
         } else {
           line.textContent = "Bridge: no boot recorded yet.";
         }
-        wrap.appendChild(line);
+        body.appendChild(line);
         const ev = events.length > 0 ? events[events.length - 1] : null;
-        if (ev) {
-          const evLine = document.createElement("div");
-          evLine.textContent =
-            `Content script ran: ${new Date(ev.ts).toLocaleTimeString()} · ${ev.host} · ${ev.href}`;
-          wrap.appendChild(evLine);
-        } else {
-          const evLine = document.createElement("div");
-          evLine.textContent = "Content script: never ran (no event).";
-          wrap.appendChild(evLine);
-        }
-        (document.querySelector("main") ?? document.body).appendChild(wrap);
+        const evLine = document.createElement("div");
+        evLine.textContent = ev
+          ? `Content script ran: ${new Date(ev.ts).toLocaleTimeString()} · ${ev.host} · ${ev.href}`
+          : "Content script: never ran (no event).";
+        body.appendChild(evLine);
       })
       .catch(() => {});
   }
 
-  // Init
+  /* ---------- wiring ---------- */
+
+  for (const def of GROUP_DEFS) setupGroup(def);
+  setupSections();
+
+  document.getElementById("enableAll")?.addEventListener("click", () => setAll(true));
+  document.getElementById("disableAll")?.addEventListener("click", () => setAll(false));
+
+  // Reset to defaults needs a confirm step (no confirm() dialogs in popups —
+  // they can close the popup). First click arms, second click resets.
+  const resetBtn = document.getElementById("resetDefaults");
+  let resetArmed = false;
+  let resetArmTimer = null;
+  function disarmReset() {
+    resetArmed = false;
+    if (resetBtn) {
+      resetBtn.textContent = "Reset";
+      resetBtn.classList.remove("armed");
+    }
+    window.clearTimeout(resetArmTimer);
+  }
+  resetBtn?.addEventListener("click", () => {
+    if (!resetArmed) {
+      resetArmed = true;
+      resetBtn.textContent = "Sure?";
+      resetBtn.classList.add("armed");
+      resetArmTimer = window.setTimeout(disarmReset, 3000);
+      return;
+    }
+    disarmReset();
+    touchedIds.clear();
+    const fresh = normalizeSettings({ ...DEFAULT_SETTINGS });
+    writeForm(fresh);
+    browser.storage.local.set({ [STORAGE_KEY]: fresh })
+      .then(() => {
+        status.textContent = "Settings reset to defaults.";
+        status.classList.remove("error");
+        status.classList.add("saved");
+        window.clearTimeout(savedMessageTimer);
+        savedMessageTimer = window.setTimeout(() => {
+          status.textContent = "Settings are stored locally. You won't need to redo them.";
+          status.classList.remove("saved");
+        }, 1100);
+      })
+      .catch(() => {
+        status.textContent = "Could not reset settings.";
+        status.classList.add("error");
+      });
+  });
+
+  // Every real setting saves + refreshes; fake masters are handled by setupGroup.
+  for (const id of SETTING_IDS) {
+    const input = getInput(id);
+    if (!input) continue;
+    input.addEventListener("change", () => {
+      markTouched(id);
+      saveSettings();
+      refreshAll();
+    });
+  }
+
+  // Init: settings first, then UI collapse state (independent reads).
   browser.storage.local
     .get(STORAGE_KEY)
     .then((stored) => {
@@ -440,6 +356,21 @@
       writeForm(DEFAULT_SETTINGS);
       status.textContent = "Could not load settings.";
     });
+
+  browser.storage.local
+    .get(UI_KEY)
+    .then((stored) => {
+      const v = stored?.[UI_KEY];
+      if (v && typeof v === "object") {
+        uiState = {
+          groups: { ...(v.groups || {}) },
+          sections: { ...(v.sections || {}) },
+        };
+      }
+      applyGroupOpenStates();
+      applySectionOpenStates();
+    })
+    .catch(() => {});
 
   renderBridgeInfo();
 })();

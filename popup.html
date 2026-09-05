@@ -10,343 +10,434 @@
     <main class="panel">
       <header class="header">
         <span class="mark" aria-hidden="true">☢</span>
-        <span>
+        <span class="title">
           <strong>Openfront+</strong>
-          <small>OpenFront.io · unofficial
-              Fanmade extension to improve the game, does not provide any advantages or cheats.</small>
+          <small>Unofficial openfront extension to improve the game</small>
         </span>
       </header>
 
-      <section class="toggles" aria-label="Extension features">
+      <div class="toolbar">
+        <span class="enabled-count" id="enabledCount" aria-live="polite"></span>
+        <span class="toolbar-spacer"></span>
+        <button type="button" class="link-btn" id="enableAll">Enable all</button>
+        <button type="button" class="link-btn" id="disableAll">Disable all</button>
+        <button type="button" class="link-btn" id="resetDefaults">Reset</button>
+      </div>
 
-        <!-- SAM Coverage -->
-        <label class="toggle-card">
-          <span class="copy">
-            <span class="title-row">
-              <strong>SAM Coverage</strong>
-              <span class="badge badge--blue">☢ Atom Bomb only</span>
-            </span>
-            <small>After your cursor rests for 1.5 s, shows atoms required, possible SAM upgrades, and total gold cost for the hovered tile.</small>
-          </span>
-          <span class="switch">
-            <input id="samCoverage" type="checkbox" />
-            <span class="track" aria-hidden="true"></span>
-          </span>
-        </label>
+      <!-- ============ NUKES & COMBAT ============ -->
+      <section class="collapsible-section open" data-section="nukes">
+        <button type="button" class="section-header" aria-expanded="true">
+          <span class="section-title">☢ Nukes &amp; Combat</span>
+          <span class="section-count" data-section-count="nukes"></span>
+          <span class="section-chevron" aria-hidden="true">▶</span>
+        </button>
+        <div class="collapse-wrap">
+          <div class="toggles" aria-label="Nuke features">
 
-        <!-- Nuke Grouper -->
-        <label class="toggle-card">
-          <span class="copy">
-            <span class="title-row">
-              <strong>Nuke Grouper</strong>
-              <span class="badge badge--yellow">☢ Atom Bombs</span>
-              <span class="badge badge--orange">💣 Hydro Bombs</span>
-            </span>
-            <small>Clusters nearby in-flight nukes into stable Enemy, Ally, and Your counters. Shows atom and hydrogen bomb counts separately. MIRV warheads are ignored.</small>
-          </span>
-          <span class="switch">
-            <input id="nukeGrouper" type="checkbox" />
-            <span class="track" aria-hidden="true"></span>
-          </span>
-        </label>
-
-        <!-- Spawn Selection -->
-        <label class="toggle-card">
-          <span class="copy">
-            <span class="title-row">
-              <strong>Better Spawn Selection</strong>
-              <span class="badge badge--green">Spawn only</span>
-            </span>
-            <small>During spawn selection, marks other human teammates with your team's actual color. Disappears automatically when spawning ends.</small>
-          </span>
-          <span class="switch">
-            <input id="teammateMarkers" type="checkbox" />
-            <span class="track" aria-hidden="true"></span>
-          </span>
-        </label>
-
-        <!-- Build Progress Labels -->
-        <label class="toggle-card">
-          <span class="copy">
-            <span class="title-row">
-              <strong>Build Progress Labels</strong>
-              <span class="badge badge--green">🏗 Construction</span>
-            </span>
-            <small>Adds a percentage and the remaining seconds under every structure's build bar — cities, ports, factories, defense posts, missile silos, and SAM launchers.</small>
-          </span>
-          <span class="switch">
-            <input id="buildProgress" type="checkbox" />
-            <span class="track" aria-hidden="true"></span>
-          </span>
-        </label>
-
-        <!-- Incoming Nuke Alert -->
-        <label class="toggle-card">
-          <span class="copy">
-            <span class="title-row">
-              <strong>Incoming Nuke Alert</strong>
-              <span class="badge badge--red">☢ Atom Bombs</span>
-              <span class="badge badge--orange">💣 Hydro Bombs</span>
-              <span class="badge badge--purple">🚀 MIRV</span>
-            </span>
-            <small>Shows a HUD panel listing every nuke heading for your territory — type, count, and seconds until impact. Updates live as nukes are intercepted or land. MIRV carriers split into warheads which CAN be intercepted. Tells you if you have sufficient SAMs to intercept, using each nuke's real flight path: SAM missile travel time, reload cycles, and in-progress upgrades are all accounted for. SAMs from allies/teammates count.</small>
-          </span>
-          <span class="switch">
-            <input id="incomingNukeAlert" type="checkbox" />
-            <span class="track" aria-hidden="true"></span>
-          </span>
-        </label>
-
-        <!-- Show Nukes in Airspace (collapsible, Show Your Nukes is a sub-toggle) -->
-        <div class="toggle-card toggle-card--collapsible" id="airspaceCard">
-          <div class="toggle-card-header" id="airspaceHeader">
-            <span class="copy">
-              <span class="title-row">
-                <strong>Show Nukes in Airspace</strong>
-                <span class="badge badge--blue">☢ Atom Bombs</span>
-                <span class="badge badge--orange">💣 Hydro Bombs</span>
-                <span class="badge badge--purple">🚀 MIRV</span>
-              </span>
-              <small>Adds a UI panel that shows all nukes currently in the airspace (global counts).</small>
-            </span>
-            <span class="switch">
-              <input id="globalNukeActivity" type="checkbox" />
-              <span class="track" aria-hidden="true"></span>
-            </span>
-            <span class="collapse-arrow" id="airspaceArrow">▶</span>
-          </div>
-          <div class="sub-toggles" id="airspaceSubs">
-            <label class="toggle-card toggle-card--sub" id="personalNukeTrackerCard">
+            <label class="toggle-card">
               <span class="copy">
                 <span class="title-row">
-                  <strong>Show Your Nukes</strong>
-                  <span class="badge badge--blue">☢ Atom Bombs</span>
-                  <span class="badge badge--orange">💣 Hydro Bombs</span>
+                  <strong>SAM Coverage</strong>
+                  <span class="badge badge--blue">☢ Atom only</span>
+                </span>
+                <small>With the Atom Bomb tool armed (8), rest your cursor on a tile for 1.5 s to see atoms needed, possible enemy SAM upgrades, and total gold cost.</small>
+              </span>
+              <span class="switch">
+                <input id="samCoverage" type="checkbox" />
+                <span class="track" aria-hidden="true"></span>
+              </span>
+            </label>
+
+            <label class="toggle-card">
+              <span class="copy">
+                <span class="title-row">
+                  <strong>Nuke Grouper</strong>
+                  <span class="badge badge--yellow">☢ Atoms</span>
+                  <span class="badge badge--orange">💣 Hydros</span>
+                </span>
+                <small>Groups nearby in-flight nukes into stable Your / Ally / Enemy counters with launcher names, atoms and hydrogen shown separately.</small>
+              </span>
+              <span class="switch">
+                <input id="nukeGrouper" type="checkbox" />
+                <span class="track" aria-hidden="true"></span>
+              </span>
+            </label>
+
+            <label class="toggle-card">
+              <span class="copy">
+                <span class="title-row">
+                  <strong>Incoming Nuke Alert</strong>
+                  <span class="badge badge--red">☢ Atoms</span>
+                  <span class="badge badge--orange">💣 Hydros</span>
                   <span class="badge badge--purple">🚀 MIRV</span>
                 </span>
-                <small>Also shows how many of those nukes are yours.</small>
+                <small>Live panel of every nuke heading for your territory — type, count, impact countdown, and whether your (+allied) SAMs can stop them in time. MIRV warheads count as interceptable.</small>
               </span>
               <span class="switch">
-                <input id="personalNukeTracker" type="checkbox" />
+                <input id="incomingNukeAlert" type="checkbox" />
                 <span class="track" aria-hidden="true"></span>
               </span>
-              <span class="lock-icon" id="lockIcon" aria-hidden="true">🔒</span>
             </label>
-          </div>
-        </div>
 
-        <!-- Enemy Nuke Readiness -->
-        <label class="toggle-card">
-          <span class="copy">
-            <span class="title-row">
-              <strong>Enemy Nuke Readiness</strong>
-              <span class="badge badge--red">☢ Missile Silos</span>
-            </span>
-            <small>Adds a row to the player-info overlay (shown when you hover a player) with how many nukes they have ready and how many they can afford to launch right now, based on missile silo capacity and gold.</small>
-          </span>
-          <span class="switch">
-            <input id="enemyNukeReadiness" type="checkbox" />
-            <span class="track" aria-hidden="true"></span>
-          </span>
-        </label>
+            <div class="toggle-card toggle-card--collapsible" data-group="airspace" id="airspaceCard">
+              <div class="toggle-card-header">
+                <button type="button" class="group-expander open" aria-expanded="true" aria-controls="airspaceSubs">
+                  <span class="copy">
+                    <span class="title-row">
+                      <strong>Show Nukes in Airspace</strong>
+                      <span class="badge badge--blue">☢ Atoms</span>
+                      <span class="badge badge--orange">💣 Hydros</span>
+                      <span class="badge badge--purple">🚀 MIRV</span>
+                    </span>
+                    <small>Global counts of all nukes currently flying.</small>
+                  </span>
+                  <span class="collapse-arrow" id="airspaceArrow" aria-hidden="true">▶</span>
+                </button>
+                <label class="switch">
+                  <input id="globalNukeActivity" type="checkbox" />
+                  <span class="track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <div class="sub-toggles open" id="airspaceSubs">
+                <div class="sub-stack">
+                  <label class="toggle-card toggle-card--sub" id="personalNukeTrackerCard">
+                    <span class="copy">
+                      <span class="title-row"><strong>Show Your Nukes</strong></span>
+                      <small>Also show how many of them are yours.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="personalNukeTracker" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
 
-        <!-- Player Stats Overlay (collapsible) -->
-        <div class="toggle-card toggle-card--collapsible" id="playerStatsCard">
-          <div class="toggle-card-header" id="playerStatsHeader">
-            <span class="copy">
-              <span class="title-row">
-                <strong>Player Stats Overlay</strong>
-                <span class="badge badge--green">&#9876; Troops</span>
-                <span class="badge badge--blue">💰 Gold</span>
-              </span>
-              <small>Adds rows to the player-info overlay (shown when you hover a player): their natural troop growth from the game's formula, and their gold income measured from their gold changes over the last 60 s — same model as your own panels, including a base/ports/warships/factories breakdown.</small>
-            </span>
-            <span class="switch">
-              <input id="playerStatsOverlay" type="checkbox" />
-              <span class="track" aria-hidden="true"></span>
-            </span>
-            <span class="collapse-arrow" id="playerStatsArrow">&#9654;</span>
-          </div>
-          <div class="sub-toggles" id="playerStatsSubs">
-            <label class="toggle-card toggle-card--sub">
+            <label class="toggle-card">
               <span class="copy">
                 <span class="title-row">
-                  <strong>Troop Rate (Others)</strong>
+                  <strong>Enemy Nuke Readiness</strong>
+                  <span class="badge badge--red">☢ Silos</span>
                 </span>
+                <small>Hover any player to see nukes ready in their silos and how many they can afford. Cash-strapped enemies highlight amber.</small>
               </span>
               <span class="switch">
-                <input id="overlayTroopRate" type="checkbox" />
-                <span class="track" aria-hidden="true"></span>
-              </span>
-            </label>
-            <label class="toggle-card toggle-card--sub">
-              <span class="copy">
-                <span class="title-row">
-                  <strong>Gold Income (Others)</strong>
-                </span>
-              </span>
-              <span class="switch">
-                <input id="overlayGoldIncome" type="checkbox" />
-                <span class="track" aria-hidden="true"></span>
-              </span>
-            </label>
-          </div>
-        </div>
-
-        <!-- Trade Partner (collapsible) -->
-        <div class="toggle-card toggle-card--collapsible" id="tradePartnerCard">
-          <div class="toggle-card-header" id="tradePartnerHeader">
-            <span class="copy">
-              <span class="title-row">
-                <strong>Trade Partner</strong>
-                <span class="badge badge--blue">💰 Trade</span>
-                <span class="badge badge--red">⚔ Naval</span>
-              </span>
-              <small>Adds rows to the player-info overlay (shown when you hover a player). Income shows the gold you receive from trading with them, per second and per minute — port-to-port trade ships, captured ships, and train stops at each other's cities/ports/factories. Naval rows split each event into "theirs" (your navy vs them) and "mine" (their navy vs you): trade-ship captures, transport ships destroyed, and warships destroyed.</small>
-            </span>
-            <span class="switch">
-              <input id="tradePartner" type="checkbox" />
-              <span class="track" aria-hidden="true"></span>
-            </span>
-            <span class="collapse-arrow" id="tradePartnerArrow">▶</span>
-          </div>
-          <div class="sub-toggles" id="tradePartnerSubs">
-            <label class="toggle-card toggle-card--sub">
-              <span class="copy">
-                <span class="title-row">
-                  <strong>Trade Income</strong>
-                </span>
-              </span>
-              <span class="switch">
-                <input id="tradeIncome" type="checkbox" />
-                <span class="track" aria-hidden="true"></span>
-              </span>
-            </label>
-            <label class="toggle-card toggle-card--sub">
-              <span class="copy">
-                <span class="title-row">
-                  <strong>Trade Ship Captures</strong>
-                </span>
-              </span>
-              <span class="switch">
-                <input id="tradeCaptures" type="checkbox" />
-                <span class="track" aria-hidden="true"></span>
-              </span>
-            </label>
-            <label class="toggle-card toggle-card--sub">
-              <span class="copy">
-                <span class="title-row">
-                  <strong>Transport Ships Down</strong>
-                </span>
-              </span>
-              <span class="switch">
-                <input id="tradeTransports" type="checkbox" />
-                <span class="track" aria-hidden="true"></span>
-              </span>
-            </label>
-            <label class="toggle-card toggle-card--sub">
-              <span class="copy">
-                <span class="title-row">
-                  <strong>Warships Down</strong>
-                </span>
-              </span>
-              <span class="switch">
-                <input id="tradeWarships" type="checkbox" />
-                <span class="track" aria-hidden="true"></span>
-              </span>
-            </label>
-          </div>
-        </div>
-
-        <!-- Gold Income (collapsible) -->
-        <div class="toggle-card toggle-card--collapsible" id="goldIncomeCard">
-          <div class="toggle-card-header" id="goldIncomeHeader">
-            <span class="copy">
-              <span class="title-row">
-                <strong>Gold Income Display</strong>
-                <span class="badge badge--blue">💰 Gold</span>
-              </span>
-              <small>Shows your gold income per second and/or per minute. The total is measured from your gold deltas, then split into base vs ports vs factories: the passive base is read from Config, and trade-ship arrivals (ports) / train station stops (factories) are detected client-side and valued with the exact Config payouts. Conquest loot from killing players is never counted. Draggable panel, position is remembered.</small>
-            </span>
-            <span class="switch">
-              <input id="goldIncome" type="checkbox" />
-              <span class="track" aria-hidden="true"></span>
-            </span>
-            <span class="collapse-arrow" id="goldIncomeArrow">▶</span>
-          </div>
-          <div class="sub-toggles" id="goldIncomeSubs">
-            <label class="toggle-card toggle-card--sub">
-              <span class="copy">
-                <span class="title-row">
-                  <strong>Gold per second</strong>
-                </span>
-              </span>
-              <span class="switch">
-                <input id="goldPerSecond" type="checkbox" />
-                <span class="track" aria-hidden="true"></span>
-              </span>
-            </label>
-            <label class="toggle-card toggle-card--sub">
-              <span class="copy">
-                <span class="title-row">
-                  <strong>Gold per minute</strong>
-                </span>
-              </span>
-              <span class="switch">
-                <input id="goldPerMinute" type="checkbox" />
+                <input id="enemyNukeReadiness" type="checkbox" />
                 <span class="track" aria-hidden="true"></span>
               </span>
             </label>
 
           </div>
         </div>
+      </section>
 
+      <!-- ============ TRADE & INCOME ============ -->
+      <section class="collapsible-section open" data-section="economy">
+        <button type="button" class="section-header" aria-expanded="true">
+          <span class="section-title">💰 Trade &amp; Income</span>
+          <span class="section-count" data-section-count="economy"></span>
+          <span class="section-chevron" aria-hidden="true">▶</span>
+        </button>
+        <div class="collapse-wrap">
+          <div class="toggles" aria-label="Trade and income features">
 
-        <!-- Troop Rate Display (collapsible) -->
-        <div class="toggle-card toggle-card--collapsible" id="troopRateCard">
-          <div class="toggle-card-header" id="troopRateHeader">
-            <span class="copy">
-              <span class="title-row">
-                <strong>Troop Rate Display</strong>
-                <span class="badge badge--green">&#9876; Troops</span>
-              </span>
-              <small>Shows your troop growth per second and/or per minute. Uses the exact game formula, so it matches the server even while you're under attack. Draggable panel, position is remembered.</small>
-            </span>
-            <span class="switch">
-              <input id="troopRate" type="checkbox" />
-              <span class="track" aria-hidden="true"></span>
-            </span>
-            <span class="collapse-arrow" id="troopRateArrow">&#9654;</span>
-          </div>
-          <div class="sub-toggles" id="troopRateSubs">
-            <label class="toggle-card toggle-card--sub">
-              <span class="copy">
-                <span class="title-row">
-                  <strong>Troops per second</strong>
-                </span>
-              </span>
-              <span class="switch">
-                <input id="troopPerSecond" type="checkbox" />
-                <span class="track" aria-hidden="true"></span>
-              </span>
-            </label>
-            <label class="toggle-card toggle-card--sub">
-              <span class="copy">
-                <span class="title-row">
-                  <strong>Troops per minute</strong>
-                </span>
-              </span>
-              <span class="switch">
-                <input id="troopPerMinute" type="checkbox" />
-                <span class="track" aria-hidden="true"></span>
-              </span>
-            </label>
+            <div class="toggle-card toggle-card--collapsible" data-group="tradePartner" id="tradePartnerCard">
+              <div class="toggle-card-header">
+                <button type="button" class="group-expander open" aria-expanded="true" aria-controls="tradePartnerSubs">
+                  <span class="copy">
+                    <span class="title-row">
+                      <strong>Trade Partner</strong>
+                      <span class="badge badge--blue">💰 Trade</span>
+                      <span class="badge badge--red">⚔ Naval</span>
+                    </span>
+                    <small>Hover any player for your trade income with them (per second + per minute: ships, captures, trains) and naval counters split theirs / mine.</small>
+                  </span>
+                  <span class="collapse-arrow" id="tradePartnerArrow" aria-hidden="true">▶</span>
+                </button>
+                <label class="switch">
+                  <input id="tradePartner" type="checkbox" />
+                  <span class="track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <div class="sub-toggles open" id="tradePartnerSubs">
+                <div class="sub-stack">
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Trade Income</strong></span>
+                      <small>Gold you earn trading with them.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="tradeIncome" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Trade Ship Captures</strong></span>
+                      <small>Captured trade ships, theirs vs mine.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="tradeCaptures" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Transport Ships Down</strong></span>
+                      <small>Enemy transports sunk, theirs vs mine.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="tradeTransports" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Warships Down</strong></span>
+                      <small>Warships destroyed, theirs vs mine.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="tradeWarships" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="toggle-card toggle-card--collapsible" data-group="playerStats" id="playerStatsCard">
+              <div class="toggle-card-header">
+                <button type="button" class="group-expander open" aria-expanded="true" aria-controls="playerStatsSubs">
+                  <span class="copy">
+                    <span class="title-row">
+                      <strong>Player Stats Overlay</strong>
+                      <span class="badge badge--green">⚔ Troops</span>
+                      <span class="badge badge--blue">💰 Gold</span>
+                    </span>
+                    <small>Hover any player for their troop growth and gold income, same models as your panels.</small>
+                  </span>
+                  <span class="collapse-arrow" id="playerStatsArrow" aria-hidden="true">▶</span>
+                </button>
+                <label class="switch">
+                  <input id="playerStatsOverlay" type="checkbox" />
+                  <span class="track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <div class="sub-toggles open" id="playerStatsSubs">
+                <div class="sub-stack">
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Troop Rate (Others)</strong></span>
+                      <small>Their natural troop growth per second.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="overlayTroopRate" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Gold Income (Others)</strong></span>
+                      <small>Their measured gold income, split by source.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="overlayGoldIncome" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="toggle-card toggle-card--collapsible" data-group="playerIntel" id="playerIntelCard">
+              <div class="toggle-card-header">
+                <button type="button" class="group-expander open" aria-expanded="true" aria-controls="playerIntelSubs">
+                  <span class="copy">
+                    <span class="title-row">
+                      <strong>Player Intel</strong>
+                      <span class="badge badge--red">🚫 Diplomacy</span>
+                      <span class="badge badge--yellow">🔋 Tubes</span>
+                    </span>
+                    <small>Hover any player for diplomacy badges the game never shows (embargoes, doomsday clock) and live launcher readiness percentages.</small>
+                  </span>
+                  <span class="collapse-arrow" id="playerIntelArrow" aria-hidden="true">▶</span>
+                </button>
+                <label class="switch">
+                  <input id="playerIntel" type="checkbox" />
+                  <span class="track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <div class="sub-toggles open" id="playerIntelSubs">
+                <div class="sub-stack">
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Embargo &amp; Doomsday Badges</strong></span>
+                      <small>Who embargoes whom, plus doomsday-clock status.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="intelDiplomacy" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Launcher Readiness %</strong></span>
+                      <small>Share of their SAM/silo tubes ready to fire.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="intelReadinessPct" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>🎯 Targeting</strong></span>
+                      <small>Who this player is currently attacking.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="intelTargets" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="toggle-card toggle-card--collapsible" data-group="goldIncome" id="goldIncomeCard">
+              <div class="toggle-card-header">
+                <button type="button" class="group-expander open" aria-expanded="true" aria-controls="goldIncomeSubs">
+                  <span class="copy">
+                    <span class="title-row">
+                      <strong>Gold Income Display</strong>
+                      <span class="badge badge--blue">💰 Gold</span>
+                    </span>
+                    <small>Your gold income, split into base, ports, captured ships, and trains. Conquest loot excluded. Draggable, position saved.</small>
+                  </span>
+                  <span class="collapse-arrow" id="goldIncomeArrow" aria-hidden="true">▶</span>
+                </button>
+                <label class="switch">
+                  <input id="goldIncome" type="checkbox" />
+                  <span class="track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <div class="sub-toggles open" id="goldIncomeSubs">
+                <div class="sub-stack">
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Gold per second</strong></span>
+                    </span>
+                    <span class="switch">
+                      <input id="goldPerSecond" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Gold per minute</strong></span>
+                    </span>
+                    <span class="switch">
+                      <input id="goldPerMinute" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="toggle-card toggle-card--collapsible" data-group="troopRate" id="troopRateCard">
+              <div class="toggle-card-header">
+                <button type="button" class="group-expander open" aria-expanded="true" aria-controls="troopRateSubs">
+                  <span class="copy">
+                    <span class="title-row">
+                      <strong>Troop Rate Display</strong>
+                      <span class="badge badge--green">⚔ Troops</span>
+                    </span>
+                    <small>Your natural troop growth from the exact game formula. Draggable, position saved.</small>
+                  </span>
+                  <span class="collapse-arrow" id="troopRateArrow" aria-hidden="true">▶</span>
+                </button>
+                <label class="switch">
+                  <input id="troopRate" type="checkbox" />
+                  <span class="track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <div class="sub-toggles open" id="troopRateSubs">
+                <div class="sub-stack">
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Troops per second</strong></span>
+                    </span>
+                    <span class="switch">
+                      <input id="troopPerSecond" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Troops per minute</strong></span>
+                    </span>
+                    <span class="switch">
+                      <input id="troopPerMinute" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
+      </section>
 
+      <!-- ============ SPAWN & MAP ============ -->
+      <section class="collapsible-section open" data-section="map">
+        <button type="button" class="section-header" aria-expanded="true">
+          <span class="section-title">🗺 Spawn &amp; Map</span>
+          <span class="section-count" data-section-count="map"></span>
+          <span class="section-chevron" aria-hidden="true">▶</span>
+        </button>
+        <div class="collapse-wrap">
+          <div class="toggles" aria-label="Spawn and map features">
+
+            <label class="toggle-card">
+              <span class="copy">
+                <span class="title-row">
+                  <strong>Better Spawn Selection</strong>
+                  <span class="badge badge--green">Spawn only</span>
+                </span>
+                <small>During spawn selection, marks human teammates in your team's color. Auto-hides when spawning ends.</small>
+              </span>
+              <span class="switch">
+                <input id="teammateMarkers" type="checkbox" />
+                <span class="track" aria-hidden="true"></span>
+              </span>
+            </label>
+
+            <label class="toggle-card">
+              <span class="copy">
+                <span class="title-row">
+                  <strong>Build Progress Labels</strong>
+                  <span class="badge badge--green">🏗 Construction</span>
+                </span>
+                <small>Percentage + seconds remaining under every structure's build bar — cities, ports, factories, defense posts, silos, SAMs.</small>
+              </span>
+              <span class="switch">
+                <input id="buildProgress" type="checkbox" />
+                <span class="track" aria-hidden="true"></span>
+              </span>
+            </label>
+
+          </div>
+        </div>
       </section>
 
       <p id="status" class="status" role="status" aria-live="polite">Settings are stored locally. You won't need to redo them.</p>
+
+      <details class="diagnostics" id="diagnostics">
+        <summary>Diagnostics</summary>
+        <div class="diag-body" id="diagBody"></div>
+      </details>
     </main>
     <script src="popup.js"></script>
   </body>

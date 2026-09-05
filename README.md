@@ -21,9 +21,10 @@ Only active enemy SAMs are counted, and only while the Atom Bomb tool is active.
 
 ### 2. Nuke Grouper
 Clusters nearby in-flight nukes into stable counters labeled `Your`, `Ally`, or
-`Enemy`, with ☢ atom and 💣 hydrogen counts shown separately. Each label stays in
-one spot as long as the group has any active nuke, so it doesn't jump around as
-older nukes disappear. MIRV warheads are ignored.
+`Enemy`, with ☢ atom and 💣 hydrogen counts shown separately — each label also
+names who launched them (`Enemy · Alice`, `Ally · Bob, Cara +1 more`,
+`You · Dave`). Each label stays in one spot as long as the group has any active
+nuke, so it doesn't jump around as older nukes disappear. MIRV warheads are ignored.
 
 ### 3. Better Spawn Selection
 During spawn selection, marks your other **human teammates** with your team's
@@ -40,7 +41,10 @@ A HUD panel listing every nuke heading for **your** territory:
 Updates live as nukes are intercepted or land. MIRV carriers can't be shot down,
 but the warheads they release can. Intercept estimates use each nuke's real
 flight path — SAM missile travel time, reload cycles, and in-progress upgrades
-are all accounted for, matching the game's own preshot logic.
+are all accounted for, matching the game's own preshot logic. Nukes whose
+target sits outside your land but whose blast still reaches it show up as
+`~splash` rows instead of being silently skipped. Draggable by its grip bar,
+position is remembered.
 
 ### 5. Show Nukes in Airspace
 A panel showing every nuke currently in the airspace, with global counts of
@@ -48,7 +52,8 @@ in-flight atoms, hydrogen bombs, MIRV carriers, and (when present) MIRV
 warheads.
 
 **Show Your Nukes** (sub-toggle) adds a personal row counting only the nukes you
-launched. It needs the airspace panel enabled.
+launched. It needs the airspace panel enabled. Draggable by its grip bar,
+position is remembered.
 
 ### 6. Enemy Nuke Readiness
 When you hover a player, adds a row to the game's info panel showing how many
@@ -56,7 +61,14 @@ nukes that player has **ready right now** and how many they can actually afford
 to launch with their current gold (☢ atoms, 💣 hydrogen, 🚀 MIRV). Enemies with
 loaded silos but not enough gold are highlighted in amber.
 
-### 7. Trade Partner
+### 7. Player Intel
+Hover rows with things the game's own overlay never shows. Sub-toggles:
+- **Embargo & Doomsday Badges** — who embargoes whom (either direction), plus
+  doomsday-clock / decaying status.
+- **Launcher Readiness %** — share of their SAM and silo tubes actually ready
+  to fire right now, reloads counted as not ready.
+
+### 8. Trade Partner
 When you hover a player, adds rows to the game's info panel covering your trade
 and naval interactions with them. Events are split into **"theirs"** (your navy
 vs them) and **"mine"** (their navy vs you). Sub-toggles:
@@ -70,7 +82,7 @@ Trade income includes port-to-port trade ships, captured ships your warships
 bring in, and train stops at each other's cities/ports/factories — shown per
 second and per minute.
 
-### 8. Player Stats Overlay
+### 9. Player Stats Overlay
 Adds rows to the player-info overlay (shown when you hover a player):
 - **Troop Rate (Others)** — their natural troop growth per second/minute,
   straight from the game's own formula (same figure as your Troop Rate panel).
@@ -79,7 +91,7 @@ Adds rows to the player-info overlay (shown when you hover a player):
   with a base/ports/warships/factories breakdown estimated from detected
   payouts to that player.
 
-### 9. Gold Income Display
+### 10. Gold Income Display
 A draggable panel showing your gold income **per second** and/or **per minute**
 (position is remembered). The total is measured from your actual gold, then split
 into:
@@ -91,14 +103,14 @@ into:
 Values are averaged over a 60-second window. Conquest loot from killing players
 is never counted, and spending is ignored.
 
-### 10. Troop Rate Display
+### 11. Troop Rate Display
 A draggable panel showing your natural troop growth **per second** and/or **per
 minute** (position is remembered). It uses the game's exact growth formula, so
 it matches the server even while you're under attack. Building cities raises
 your population cap and therefore the growth rate. Reports **natural growth
 only** — attacking other players is never counted.
 
-### 11. Build Progress Labels
+### 12. Build Progress Labels
 While a structure is under construction (city, port, factory, defense post,
 missile silo, SAM launcher), a small label appears under its build bar showing
 the percentage complete and the remaining build time in seconds. Durations come
@@ -110,11 +122,22 @@ No auto-join, boat macros, economy cheats, alliance panels, bot markers,
 heatmaps, or anything that plays the game for you. It only *surfaces*
 information the game already knows.
 
+## Browser support
+
+| Browser | Status | Notes |
+|---|---|---|
+| Chrome | ✅ Same package, no changes | Chrome 105+ (for `:has()` selectors) |
+| Brave | ✅ Same package, no changes | `brave://extensions` → Developer mode → Load unpacked. Shields don't affect it |
+| Edge | ✅ Same package, no changes | `edge://extensions` → Developer mode → Load unpacked |
+| Opera / Vivaldi / Arc | ✅ Same package, no changes | Any Chromium base works; use developer mode, or Opera's "Install Chrome Extensions" for store builds |
+| Firefox | ✅ Already configured | Add-on ID + MV3 manifest included; submitted to the Firefox Add-ons store. `about:debugging#/runtime/this-firefox` → Load Temporary Add-on for testing |
+| Safari | ⚠️ Code-compatible, manual step needed | Standard MV3 + promise APIs throughout, so the code itself runs — but Apple requires converting with Xcode (`xcrun safari-web-extension-converter`) and a paid Developer account to distribute |
+
 ## Install
 
-### Chrome
+### Chrome, Brave, Edge, Opera (Chromium)
 1. Extract the extension folder (or ZIP) somewhere on disk.
-2. Open `chrome://extensions`.
+2. Open your browser's extensions page (`chrome://extensions`, `brave://extensions`, `edge://extensions`, or `opera://extensions`).
 3. Turn on **Developer mode** (toggle in the top-right corner).
 4. Click **Load unpacked**.
 5. Select the `openfront-plus` folder.
@@ -123,11 +146,10 @@ information the game already knows.
 7. If an OpenFront tab was already open before installing, reload it once.
 
 ### Firefox
-The extension is already submitted to the Firefox Add-ons store. 
+The extension is already submitted to the Firefox Add-ons store.
 
-### Other browsers
-Any browser that supports temporary or unpacked extensions can load it the same
-way as Chrome (the exact steps differ per browser), working on getting this extension to every webstore out there
+### Safari
+Not packaged yet — requires Apple's Xcode converter and Developer account (see table above). The code needs no changes, only the conversion step.
 
 ## Notes
 
