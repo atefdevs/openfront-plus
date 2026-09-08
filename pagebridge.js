@@ -508,10 +508,6 @@
     return busy;
   }
 
-  function getSamAvailableShotsNow(game, u) {
-    return Math.max(0, getUnitLevel(u) - countBusyTubes(game, getMissileTimerQueue(u), getSamCooldownTicks(game)));
-  }
-
   function estimateSamShotsInWindow(g, u, tw) {
     if (!Number.isFinite(tw) || tw < 0) return 0;
     const cooldown = getSamCooldownTicks(g), level = getUnitLevel(u), queue = getMissileTimerQueue(u);
@@ -773,7 +769,7 @@
   // waitTicks (only meaningful in the trajectory fallback — the plan's
   // startTick already includes them), and target tile.
   function getNukeNav(game, unit) {
-    const nav = { points: null, curIdx: null, waitTicks: 0, targetTile: getNukeTargetTileForAlert(unit) };
+    const nav = { unitId: toFiniteNumber(callMethod(unit, "id"), null), points: null, curIdx: null, waitTicks: 0, targetTile: getNukeTargetTileForAlert(unit) };
     const prog = getMotionPlanProgress(game, toFiniteNumber(callMethod(unit, "id"), null));
     if (prog) {
       nav.points = prog.rec.path;
@@ -887,7 +883,11 @@
       covering.push(s);
       const own = getUnitOwner(s); if (own) owners.set(getPlayerId(own), own);
     }
-    const atoms = 1 + covering.reduce((sum, s) => sum + getSamAvailableShotsNow(game, s), 0);
+    // Original-build formula: 1 atom + the combined levels of all covering
+    // SAMs. (Counting only currently-free tubes was tried here; in live games
+    // front-line SAMs are almost always mid-reload, which collapsed the
+    // headline to 1.)
+    const atoms = 1 + covering.reduce((sum, s) => sum + getUnitLevel(s), 0);
     let potential = 0;
     for (const own of owners.values()) {
       const gold = getPlayerGold(own);
@@ -974,7 +974,7 @@
   function ensureNukeStyle() {
     appendStyle(NUKE_STYLE_ID, `
       #${NUKE_LAYER_ID} {
-        position: fixed; inset: 0; z-index: 2147483646; pointer-events: none;
+        position: fixed; inset: 0; z-index: 32; pointer-events: none;
       }
       #${NUKE_LAYER_ID} .of-nuke-tools-group-label {
         position: fixed; left: 0; top: 0; padding: 5px 8px 5px 20px;
@@ -1263,7 +1263,7 @@
 
   function ensureTeammateStyle() {
     appendStyle(TEAMMATE_STYLE_ID, `
-      #${TEAMMATE_LAYER_ID} { position: fixed; inset: 0; z-index: 2147483645; pointer-events: none; }
+      #${TEAMMATE_LAYER_ID} { position: fixed; inset: 0; z-index: 31; pointer-events: none; }
       #${TEAMMATE_LAYER_ID} .of-nuke-tools-teammate-dot {
         position: fixed; left: 0; top: 0; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
         border: 2px solid rgba(255,255,255,0.72); border-radius: 50%;
@@ -1560,13 +1560,6 @@
         display: flex; flex-direction: column; gap: 6px;
         min-width: 220px; max-width: 300px;
       }
-      .of-nuke-tools-panel-grip {
-        pointer-events: auto; cursor: grab; user-select: none;
-        -webkit-user-select: none; touch-action: none;
-        text-align: center; font-size: 9px; line-height: 1; color: #475569;
-        letter-spacing: 0.2em; padding: 3px 0 1px;
-      }
-      .of-nuke-tools-panel-grip:active { cursor: grabbing; color: #94a3b8; }
       .of-nuke-tools-alert-row {
         display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
         padding: 8px 12px; border-radius: 9px; background: rgba(7,12,18,0.93);
@@ -1574,6 +1567,7 @@
         box-shadow: 0 4px 16px rgba(0,0,0,0.4);
         font: 12px system-ui, sans-serif; text-shadow: 0 1px 4px rgba(0,0,0,0.9);
         white-space: nowrap;
+        pointer-events: auto; cursor: pointer;
       }
       @keyframes of-nuke-tools-alert-in {
         from { opacity: 0; transform: translateX(-12px); }
@@ -1649,11 +1643,128 @@
 
   function ensureAlertPanel() {
     ensureAlertStyle();
-    // Returns the inner content div; the outer shell (position + drag grip)
-    // survives row rebuilds, so callers keep working unchanged.
-    const { content } = ensureDraggableShell(ALERT_PANEL_ID, ALERT_POS_KEY);
-    content.setAttribute("aria-live", "polite");
-    return content;
+    let p = document.getElementById(ALERT_PANEL_ID);
+    if (!p) {
+      p = document.createElement("div");
+      p.id = ALERT_PANEL_ID;
+      p.setAttribute("aria-live", "polite");
+      (document.body || document.documentElement).appendChild(p);
+    }
+    if (!p.__ofZoomBound) {
+      p.__ofZoomBound = true;
+      p.addEventListener("click", onAlertPanelClick);
+    }
+    return p;
+  }
+
+  // Click an alert row to center the camera on that nuke's live position.
+  // Resolves the tile fresh from the motion plan at click time (nukes move
+  // ~5.5 tiles/tick, so scan-time positions go stale fast), falling back to
+  // the stored position and finally the target tile.
+  function nukeZoomTile(game, nav) {
+    if (!nav) return null;
+    if (Number.isFinite(nav.unitId)) {
+      const prog = getMotionPlanProgress(game, nav.unitId);
+      if (prog && prog.rec && Array.isArray(prog.rec.path) && prog.rec.path.length) {
+        const idx = Math.max(0, Math.min(prog.rec.path.length - 1, prog.idx));
+        const t = prog.rec.path[idx];
+        if (Number.isFinite(t)) return t;
+      }
+    }
+    if (Array.isArray(nav.points) && Number.isFinite(nav.curIdx) && nav.points.length) {
+      const t = nav.points[Math.max(0, Math.min(nav.points.length - 1, nav.curIdx))];
+      if (Number.isFinite(t)) return t;
+    }
+    return Number.isFinite(nav.targetTile) ? nav.targetTile : null;
+  }
+
+  let camAnimToken = 0;
+  let camAnimCancelInstalled = false;
+  function cancelCameraAnimation() { camAnimToken++; }
+  // Exact mirrors of the game's own camera-flight tuning
+  // (TransformHandler.goTo): 16ms steps, exponential smoothing, per-step
+  // speed cap, arrival within 2 world units.
+  const CAM_GOTO_INTERVAL_MS = 16;
+  const CAM_GOTO_MAX_SPEED = 15;
+  const CAM_GOTO_SMOOTHING = 0.03;
+  const CAM_GOTO_CLOSE_DIST = 2;
+  const CAM_GOTO_TIMEOUT_MS = 8000;
+
+  function animateCameraToWorld(game, transform, wx, wy) {
+    // Mirror the game's own flight (TransformHandler.goTo): chase the WORLD
+    // target with exponentially-smoothed, speed-capped steps until close.
+    // (A previous version chased precomputed offsets against world coords —
+    // mismatched domains, so it flew wrong and never arrived.)
+    void game;
+    if (!Number.isFinite(wx) || !Number.isFinite(wy)) return;
+    // Any real user input (pan/zoom/click, including a second row click)
+    // cancels the flight instantly so the camera never fights the player.
+    // Installed once; the row's own pointerdown bubbles through first, then
+    // the click handler below mints a fresh token, so starting a flight is
+    // never cancelled by its own click.
+    if (!camAnimCancelInstalled) {
+      camAnimCancelInstalled = true;
+      try {
+        window.addEventListener("pointerdown", cancelCameraAnimation, true);
+        window.addEventListener("wheel", cancelCameraAnimation, { passive: true, capture: true });
+      } catch (_) {}
+    }
+    let sx, sy;
+    try {
+      sx = transform.offsetX; sy = transform.offsetY;
+    } catch (_) { return; }
+    if (!Number.isFinite(sx) || !Number.isFinite(sy)) {
+      try { transform.offsetX = tx; transform.offsetY = ty; } catch (_) {}
+      return;
+    }
+    // Fly like the game itself does (TransformHandler.goTo): chase the
+    // snapshot point with exponentially-smoothed, speed-capped steps until
+    // close. The game snapshots the unit's tile once at click time rather
+    // than tracking it — matched here (wx/wy were resolved by the caller).
+    const my = ++camAnimToken;
+    const t0 = performance.now();
+    let lastT = null;
+    const id = setInterval(() => {
+      try {
+        if (my !== camAnimToken) { clearInterval(id); return; }
+        if (performance.now() - t0 > CAM_GOTO_TIMEOUT_MS) { clearInterval(id); return; }
+        const center = callMethod(transform, "screenCenter");
+        const cx = toFiniteNumber(readProperty(center, "screenX"), null);
+        const cy = toFiniteNumber(readProperty(center, "screenY"), null);
+        if (cx === null || cy === null) { clearInterval(id); return; }
+        if (Math.abs(wx - cx) + Math.abs(wy - cy) < CAM_GOTO_CLOSE_DIST) { clearInterval(id); return; }
+        const now = performance.now();
+        const dt = lastT === null ? CAM_GOTO_INTERVAL_MS : now - lastT;
+        lastT = now;
+        const r = 1 - Math.pow(CAM_GOTO_SMOOTHING, dt / 1000);
+        let ox, oy;
+        try { ox = transform.offsetX; oy = transform.offsetY; } catch (_) { clearInterval(id); return; }
+        if (!Number.isFinite(ox) || !Number.isFinite(oy)) { clearInterval(id); return; }
+        transform.offsetX = ox + Math.max(Math.min((wx - cx) * r, CAM_GOTO_MAX_SPEED), -CAM_GOTO_MAX_SPEED);
+        transform.offsetY = oy + Math.max(Math.min((wy - cy) * r, CAM_GOTO_MAX_SPEED), -CAM_GOTO_MAX_SPEED);
+        try { transform.changed = true; } catch (_) {}
+      } catch (_) {
+        try { clearInterval(id); } catch (_) {}
+      }
+    }, CAM_GOTO_INTERVAL_MS);
+  }
+
+  function onAlertPanelClick(e) {
+    try {
+      const row = e.target && e.target.closest ? e.target.closest(".of-nuke-tools-alert-row") : null;
+      const navs = row && row.__ofNavs;
+      if (!row || !Array.isArray(navs) || !navs.length) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const ctx = getGameContext();
+      if (!ctx?.game || !ctx?.transform) return;
+      const tile = nukeZoomTile(ctx.game, navs[0]);
+      if (tile === null) return;
+      const wx = toFiniteNumber(callMethod(ctx.game, "x", tile));
+      const wy = toFiniteNumber(callMethod(ctx.game, "y", tile));
+      if (!Number.isFinite(wx) || !Number.isFinite(wy)) return;
+      animateCameraToWorld(ctx.game, ctx.transform, wx, wy);
+    } catch (_) {}
   }
 
   function clearAlertPanel() {
@@ -1740,10 +1851,6 @@
     if (tile !== null) return tile;
     tile = toFiniteNumber(callMethod(unit, "targetTile"), null);
     if (tile !== null) return tile;
-    const target = readProperty(unit, "target");
-    if (target) {
-      const x = toFiniteNumber(readProperty(target, "x")), y = toFiniteNumber(readProperty(target, "y"));
-    }
     return null;
   }
 
@@ -2100,6 +2207,7 @@
         secondsMin,
         secondsMax,
         samStatus,
+        navs: group.navs,
       });
     }
 
@@ -2112,6 +2220,7 @@
     const colors = alertColors(row.nukeType);
     const el = document.createElement("div");
     el.className = "of-nuke-tools-alert-row";
+    el.title = "Click to jump the camera to this nuke";
     el.style.setProperty("--alert-border", colors.border);
     el.style.setProperty("--alert-text", colors.text);
     el.style.setProperty("--alert-dot", colors.dot);
@@ -2304,6 +2413,7 @@
           } else {
             for (const rowData of newData) {
               const rowObj = createAlertRow(rowData);
+              rowObj.el.__ofNavs = rowData.navs;
               panel.appendChild(rowObj.el);
               currentAlertRows.set(rowData.key, rowObj);
             }
@@ -2318,6 +2428,7 @@
             for (const rowData of newData) {
               const rowObj = currentAlertRows.get(rowData.key);
               if (rowObj) {
+                rowObj.el.__ofNavs = rowData.navs;
                 updateAlertRow(rowObj.el, rowData, rowObj.timerValueEl, rowObj.samEl);
               }
             }
@@ -2353,13 +2464,6 @@
         min-width: 180px;
         max-width: 260px;
       }
-      .of-nuke-tools-panel-grip {
-        pointer-events: auto; cursor: grab; user-select: none;
-        -webkit-user-select: none; touch-action: none;
-        text-align: center; font-size: 9px; line-height: 1; color: #475569;
-        letter-spacing: 0.2em; padding: 3px 0 1px;
-      }
-      .of-nuke-tools-panel-grip:active { cursor: grabbing; color: #94a3b8; }
       .activity-row {
         display: flex;
         align-items: center;
@@ -2405,11 +2509,14 @@
 
   function ensureGlobalActivityPanel() {
     ensureGlobalActivityStyle();
-    // Returns the inner content div (see ensureAlertPanel); callers that wipe
-    // and rebuild rows keep working unchanged.
-    const { outer, content } = ensureDraggableShell(GLOBAL_ACTIVITY_PANEL_ID, ACTIVITY_POS_KEY);
-    outer.setAttribute("aria-label", "Global nuke activity");
-    return content;
+    let panel = document.getElementById(GLOBAL_ACTIVITY_PANEL_ID);
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = GLOBAL_ACTIVITY_PANEL_ID;
+      panel.setAttribute("aria-label", "Global nuke activity");
+      (document.body || document.documentElement).appendChild(panel);
+    }
+    return panel;
   }
 
   function clearGlobalActivityPanel() {
@@ -2807,10 +2914,10 @@
   }
 
   // === Player intel rows (hover overlay) ===
-  // Two lightweight rows on player-info-overlay, each behind its own
-  // sub-toggle: diplomacy badges (embargo / doomsday — things the game's own
-  // overlay never shows) and launcher readiness % (tube-level, including
-  // partial reload progress, next to the game's static counts).
+  // Lightweight rows on player-info-overlay, each behind its own sub-toggle:
+  // diplomacy badges (embargo / doomsday — things the game's own overlay
+  // never shows), launcher readiness %, and targeting info (things the
+  // game's own overlay never shows).
   let intelObservedOverlay = null;
   let intelOverlayObserver = null;
   let lastIntelScanAt = 0;
@@ -3540,89 +3647,6 @@
       x: Math.max(4, Math.min(Math.round(x), Math.max(4, vw - 170))),
       y: Math.max(4, Math.min(Math.round(y), Math.max(4, vh - 70))),
     };
-  }
-
-  // Shared drag support for the alert + airspace panels (the gold/troop
-  // panels have their own bespoke versions). Only a slim grip bar is
-  // grabbable — the rest of the panel stays click-through so it never eats
-  // game input. Positions persist in localStorage like the other panels.
-  const ALERT_POS_KEY = "of-nuke-tools-alert-pos";
-  const ACTIVITY_POS_KEY = "of-nuke-tools-activity-pos";
-
-  function applySavedPanelPos(outer, posKey) {
-    try {
-      const p = JSON.parse(localStorage.getItem(posKey) || "null");
-      if (p && typeof p.x === "number" && typeof p.y === "number") {
-        const c = clampPanelPos(p.x, p.y);
-        outer.style.left = `${c.x}px`;
-        outer.style.top = `${c.y}px`;
-        outer.style.right = "auto";
-        outer.style.bottom = "auto";
-      }
-    } catch (_) {}
-  }
-
-  function makePanelDraggable(outer, grip, posKey) {
-    let dragging = false, offX = 0, offY = 0;
-    grip.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
-      // Convert bottom/right-anchored defaults to explicit left/top once.
-      const rect = outer.getBoundingClientRect();
-      outer.style.left = `${Math.round(rect.left)}px`;
-      outer.style.top = `${Math.round(rect.top)}px`;
-      outer.style.right = "auto";
-      outer.style.bottom = "auto";
-      dragging = true;
-      offX = e.clientX - rect.left;
-      offY = e.clientY - rect.top;
-      try { grip.setPointerCapture(e.pointerId); } catch (_) {}
-      outer.style.opacity = "0.85";
-      e.preventDefault();
-      e.stopPropagation();
-    });
-    grip.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      const pos = clampPanelPos(e.clientX - offX, e.clientY - offY);
-      outer.style.left = `${pos.x}px`;
-      outer.style.top = `${pos.y}px`;
-    });
-    const end = () => {
-      if (!dragging) return;
-      dragging = false;
-      outer.style.opacity = "";
-      try {
-        localStorage.setItem(posKey, JSON.stringify({
-          x: parseFloat(outer.style.left),
-          y: parseFloat(outer.style.top),
-        }));
-      } catch (_) {}
-    };
-    grip.addEventListener("pointerup", end);
-    grip.addEventListener("pointercancel", end);
-  }
-
-  // Builds (once) the outer positioned shell + grip bar shared by the
-  // draggable panels. Returns { outer, content }; all row rendering targets
-  // `content` so rebuilds never wipe the grip or position.
-  function ensureDraggableShell(panelId, posKey) {
-    let outer = document.getElementById(panelId);
-    if (!outer) {
-      outer = document.createElement("div");
-      outer.id = panelId;
-      const grip = document.createElement("div");
-      grip.className = "of-nuke-tools-panel-grip";
-      grip.title = "Drag to move";
-      grip.textContent = "⋮⋮";
-      const content = document.createElement("div");
-      content.className = "of-nuke-tools-panel-content";
-      content.style.cssText = "display:flex;flex-direction:column;gap:inherit;min-width:0;";
-      outer.appendChild(grip);
-      outer.appendChild(content);
-      (document.body || document.documentElement).appendChild(outer);
-      applySavedPanelPos(outer, posKey);
-      makePanelDraggable(outer, grip, posKey);
-    }
-    return { outer, content: outer.querySelector(":scope > .of-nuke-tools-panel-content") || outer };
   }
 
   function loadGoldPanelPos() {
@@ -4675,19 +4699,19 @@
 
   function ensureBuildStyle() {
     appendStyle(BUILD_STYLE_ID, `
-      #${BUILD_LAYER_ID} { position: fixed; inset: 0; z-index: 2147483644; pointer-events: none; }
+      #${BUILD_LAYER_ID} { position: fixed; inset: 0; z-index: 30; pointer-events: none; }
       #${BUILD_LAYER_ID} .of-bp-label {
         position: fixed; left: 0; top: 0;
+        transform: translate3d(var(--bp-x), var(--bp-y), 0) translateX(-50%);
+        will-change: transform;
+      }
+      #${BUILD_LAYER_ID} .of-bp-inner {
         display: flex; flex-direction: column; align-items: center; gap: 1px;
         padding: 2px 6px; border-radius: 6px;
         background: rgba(7,12,18,0.85); border: 1px solid rgba(148,163,184,0.35);
         font: 700 10px/1.15 system-ui, sans-serif; color: #e2e8f0;
         text-shadow: 0 1px 2px rgba(0,0,0,0.9); white-space: nowrap;
-        transform: translate3d(var(--bp-x), var(--bp-y), 0) translateX(-50%);
-        will-change: transform;
       }
-      /* display:flex above overrides the UA's [hidden] rule — restate it */
-      #${BUILD_LAYER_ID} .of-bp-label[hidden] { display: none; }
       #${BUILD_LAYER_ID} .of-bp-pct { font-weight: 900; font-size: 11px; color: #fde047; }
       #${BUILD_LAYER_ID} .of-bp-sec { font-size: 9px; color: #cbd5e1; }
     `);
@@ -4805,16 +4829,20 @@
       if (!e) {
         const label = document.createElement("div");
         label.className = "of-bp-label";
+        const inner = document.createElement("div");
+        inner.className = "of-bp-inner";
         const pct = document.createElement("span");
         pct.className = "of-bp-pct";
         const sec = document.createElement("span");
         sec.className = "of-bp-sec";
-        label.append(pct, sec);
+        inner.append(pct, sec);
+        label.append(inner);
         layer.appendChild(label);
         e = { label, pct, sec, text: "", hidden: false, x: NaN, y: NaN };
         buildEntries.set(item.id, e);
       }
       if (e.hidden) { e.label.hidden = false; e.hidden = false; }
+      // Fixed size and fixed gap below the pill at every zoom level.
       const sx = Math.round(screen.x);
       const sy = Math.round(screen.y + yOffset);
       if (e.x !== sx) { e.label.style.setProperty("--bp-x", `${sx}px`); e.x = sx; }
@@ -5030,6 +5058,34 @@
     const data = event.data;
     if (data?.source !== EXTENSION_SOURCE || data.type !== "SETTINGS") return;
     applySettings(data.payload);
+  });
+
+  // Viewport resizes (fullscreen toggle, window resize, devtools dock) can
+  // strand the draggable gold/troop panels outside the visible area — saved
+  // positions belong to the old viewport size. Pull back only panels that
+  // actually ended up outside; everything else is left pixel-identical (no
+  // fixed repositioning of user placements). The alert/airspace panels are
+  // CSS-anchored to corners, so viewport changes can't strand them.
+  window.addEventListener("resize", () => {
+    try {
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const targets = [
+        { el: goldPanel, key: GOLD_POS_KEY },
+        { el: troopPanel, key: TROOP_POS_KEY },
+      ];
+      for (const { el, key } of targets) {
+        if (!el || !el.isConnected) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) continue;
+        if (r.right >= 40 && r.bottom >= 40 && r.left <= vw - 40 && r.top <= vh - 40) continue;
+        const c = clampPanelPos(r.left, r.top);
+        el.style.left = `${c.x}px`;
+        el.style.top = `${c.y}px`;
+        el.style.right = "auto";
+        el.style.bottom = "auto";
+        try { localStorage.setItem(key, JSON.stringify({ x: c.x, y: c.y })); } catch (_) {}
+      }
+    } catch (_) {}
   });
 
   window.addEventListener("pagehide", stopAllFeatures, { once: true });

@@ -43,8 +43,7 @@ but the warheads they release can. Intercept estimates use each nuke's real
 flight path — SAM missile travel time, reload cycles, and in-progress upgrades
 are all accounted for, matching the game's own preshot logic. Nukes whose
 target sits outside your land but whose blast still reaches it show up as
-`~splash` rows instead of being silently skipped. Draggable by its grip bar,
-position is remembered.
+`~splash` rows instead of being silently skipped. Click a row to jump the camera to that nuke.
 
 ### 5. Show Nukes in Airspace
 A panel showing every nuke currently in the airspace, with global counts of
@@ -52,8 +51,7 @@ in-flight atoms, hydrogen bombs, MIRV carriers, and (when present) MIRV
 warheads.
 
 **Show Your Nukes** (sub-toggle) adds a personal row counting only the nukes you
-launched. It needs the airspace panel enabled. Draggable by its grip bar,
-position is remembered.
+launched. It needs the airspace panel enabled.
 
 ### 6. Enemy Nuke Readiness
 When you hover a player, adds a row to the game's info panel showing how many
