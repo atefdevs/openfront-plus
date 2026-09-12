@@ -9,6 +9,7 @@
   const EXTENSION_SOURCE = "openfront-nuke-tools-extension-v1";
   const DEFAULT_SETTINGS = Object.freeze({
     samCoverage: true,
+    samHoverDelayMs: 1000,
     nukeGrouper: true,
     teammateMarkers: true,
     incomingNukeAlert: true,
@@ -43,6 +44,13 @@
     // switch, popup.js writes "<id>__touched": true and their choice sticks.
     const out = {};
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
+      if (key === "samHoverDelayMs") {
+        const n = Number(source[key]);
+        out[key] = Number.isFinite(n)
+          ? Math.min(5000, Math.max(0, Math.round(n)))
+          : 1000;
+        continue;
+      }
       let v = source[key] === undefined
         ? Boolean(DEFAULT_SETTINGS[key])
         : Boolean(source[key]);
