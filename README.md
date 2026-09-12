@@ -12,12 +12,15 @@ makes information the game already has easier to see.
 
 ### 1. SAM Coverage
 While the **Atom Bomb** tool is selected (press `8`), rest your cursor over a
-tile for 1.5 seconds and a label shows:
+tile and a label shows:
 - how many atoms you need to clear the tile,
 - the potential extra atoms the SAM owners could afford,
 - the total gold cost.
 
-Only active enemy SAMs are counted, and only while the Atom Bomb tool is active.
+Every active SAM covering the tile is counted except your own (allies',
+teammates', enemies'), and only while the Atom Bomb tool is active. How long
+you must hold the cursor is adjustable in the popup (Hover delay, 0–5 s,
+default 1 s).
 
 ### 2. Nuke Grouper
 Clusters nearby in-flight nukes into stable counters labeled `Your`, `Ally`, or

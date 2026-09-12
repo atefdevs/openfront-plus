@@ -30,6 +30,7 @@
   const GOLD_INCOME_HOVER_ID = "of-nuke-tools-gold-income-hover";
   const BUILD_LAYER_ID = "of-nuke-tools-build-layer";
   const BUILD_STYLE_ID = "of-nuke-tools-build-style";
+  const LINUX_EMOJI_STYLE_ID = "of-nuke-tools-linux-emoji";
   // Nuke costs from Config. Atom is flat 750k, Hydrogen 5M; a MIRV carrier is
   // 25M + 15M per MIRV already launched this game. The live MIRV price is read
   // from the player's `buildables()` worker call — 25M is just the fallback.
@@ -54,7 +55,10 @@
   const MAX_PLAYER_KEYS = 120;
   const MAX_UNIT_PROPS = 400;
 
-  const SAM_SETTLE_MS = 1500;
+  const SAM_SETTLE_MS = 1000;
+  const SAM_SETTLE_MIN_MS = 0;
+  const SAM_SETTLE_MAX_MS = 5000;
+  let samSettleMs = SAM_SETTLE_MS;
   const SAM_MODE_POLL_MS = 300;
   const SAM_CACHE_MS = 750;
   const ATOM_COST = 750000;
@@ -119,6 +123,7 @@
 
   const settings = {
     samCoverage: false,
+    samHoverDelayMs: 1000,
     nukeGrouper: false,
     teammateMarkers: false,
     incomingNukeAlert: false,
@@ -206,6 +211,41 @@
     const s = document.createElement("style");
     s.id = id; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
+  }
+
+  // Linux-only emoji fallback: most Linux desktops ship no color-emoji font,
+  // so ☢💣🚀💰⚔ etc render as tofu. Windows/macOS already render them, so
+  // this is strictly gated — Windows code paths never touch it.
+  function isLinuxWithoutNativeEmoji() {
+    try {
+      const uaDataPlatform = String(navigator?.userAgentData?.platform ?? "").toLowerCase();
+      if (uaDataPlatform) {
+        if (uaDataPlatform.includes("linux")) return true;
+        return false;
+      }
+      const ua = String(navigator?.userAgent ?? "").toLowerCase();
+      if (ua.includes("cros") || ua.includes("android")) return false;
+      const plat = String(navigator?.platform ?? "").toLowerCase();
+      if (plat.includes("linux")) return true;
+      if (ua.includes("linux") && !ua.includes("android")) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  function ensureLinuxEmojiFallback() {
+    if (!isLinuxWithoutNativeEmoji()) return;
+    if (document.getElementById(LINUX_EMOJI_STYLE_ID)) return;
+    appendStyle(LINUX_EMOJI_STYLE_ID, `
+      #${SAM_LABEL_ID},
+      #${NUKE_LAYER_ID}, #${NUKE_LAYER_ID} .of-nuke-tools-group-label,
+      #${TEAMMATE_LAYER_ID},
+      #${ALERT_PANEL_ID}, #${ALERT_PANEL_ID} .of-nuke-tools-alert-row,
+      #${GLOBAL_ACTIVITY_PANEL_ID},
+      #${BUILD_LAYER_ID},
+      .of-nuke-tools-hover-card {
+        font-family: system-ui, sans-serif, "Noto Color Emoji", "Noto Emoji", "DejaVu Sans", "Symbola" !important;
+      }
+    `);
   }
 
   // Boot guard: the first seconds of a page have the game compiling its match
@@ -578,7 +618,7 @@
   let samSettleTimeout = null;
   let lastMouseX = null, lastMouseY = null;
   let canvasCacheAt = 0, canvasCache = null;
-  let samDataCache = { game: null, at: 0, available: false, sams: [] };
+  let samDataCache = { game: null, at: 0, available: false, sams: [], gameOver: false };
 
   function ensureSamStyle() {
     appendStyle(SAM_STYLE_ID, `
@@ -839,13 +879,37 @@
     return out;
   }
 
-  function collectHostileSams(game) {
+  // Universal coverage: EVERY finished SAM covering the hovered tile counts —
+  // allies', teammates', enemies'. Diplomacy doesn't matter here: the label
+  // answers "how many atoms clear this tile's SAM screen", and betrayal
+  // (ally SAMs engage the second you launch at them) plus keep-playing
+  // teammate nukes mean any covering launcher is a real interceptor.
+  // Your own launchers never intercept your nukes, so they're excluded.
+  function collectCoveringSams(game) {
+    // GameView.gameOver() turns true at WinUpdate; play can continue for
+    // those who stay (keep-playing) but the sim can freeze unit activity
+    // flags while the renderer still draws the launchers. Without the
+    // gameOver relaxation below, every such SAM is filtered out and any tile
+    // collapses to 1 ATOM even with launchers visibly in range.
+    const gameOver = callMethod(game, "gameOver") === true ||
+      callMethod(game, "isGameOver") === true;
     const now = performance.now();
-    if (samDataCache.game === game && now - samDataCache.at < SAM_CACHE_MS) return samDataCache;
+    if (samDataCache.game === game && samDataCache.gameOver === gameOver &&
+        now - samDataCache.at < SAM_CACHE_MS) return samDataCache;
     const result = []; const seenIds = new Set(); const seenObj = new WeakSet(); let available = false;
+    const me = getMyPlayer(game);
     function add(sam) {
-      if (!sam || !isActiveFinishedUnit(sam)) return;
-      if (getRelationToMe(game, getUnitOwner(sam)) !== "enemy") return;
+      if (!sam) return;
+      if (isActiveFinishedUnit(sam)) { /* live sim: strict gate */ }
+      else if (gameOver) {
+        // Frozen sim: count visually-present launchers unless never
+        // finished or destroyed.
+        if (callMethod(sam, "isUnderConstruction") === true) return;
+        if (callMethod(sam, "isDestroyed") === true ||
+            readProperty(readProperty(sam, "data"), "destroyed") === true) return;
+      } else return;
+      // Own launchers never shoot down your own nukes.
+      if (me && isSamePlayer(getUnitOwner(sam), me)) return;
       const id = getUnitId(sam);
       if (id !== null) { if (seenIds.has(id)) return; seenIds.add(id); }
       else if (typeof sam === "object" || typeof sam === "function") { if (seenObj.has(sam)) return; seenObj.add(sam); }
@@ -853,17 +917,18 @@
     }
     const gs = getGameUnitsCached(game, "SAM Launcher"); available ||= gs.available;
     for (const s of gs.units) add(s);
+    // Per-player fallback: global game.units() can miss units on some builds,
+    // so sweep every player's launchers too (add() dedupes by unit id).
     for (const p of getPlayerViews(game)) {
-      if (getRelationToMe(game, p) !== "enemy") continue;
       const ps = getPlayerUnits(p, "SAM Launcher"); available ||= ps.available;
       for (const s of ps.units) add(s);
     }
-    samDataCache = { game, at: now, available, sams: result };
+    samDataCache = { game, at: now, available, sams: result, gameOver };
     return samDataCache;
   }
 
   function getSamEstimate(game, targetTile) {
-    const col = collectHostileSams(game);
+    const col = collectCoveringSams(game);
     if (!col.available) return null;
     // Co-located launchers act as one battery: use the widest effective
     // (upgrade-aware) range in the stack instead of a summed-level range.
@@ -895,7 +960,7 @@
     }
     const cur = atoms * ATOM_COST;
     const pot = potential * ATOM_COST;
-    return { atoms, potential, currentCost: cur, potentialCost: pot, totalCost: cur + pot };
+    return { atoms, potential, currentCost: cur, potentialCost: pot, totalCost: cur + pot, coveringCount: covering.length };
   }
 
   function mouseToTargetTile(game, tf, x, y) {
@@ -924,13 +989,16 @@
     if (tile === null) { hideSamLabel(); return; }
     const est = getSamEstimate(ctx.game, tile);
     if (!est) { renderSamTracking(lastMouseX, lastMouseY); return; }
+    // No SAM protects this tile — show nothing instead of a "1 ATOM / 750k"
+    // price tag for an undefended tile.
+    if (!(est.coveringCount > 0)) { hideSamLabel(); return; }
     renderSamEstimate(lastMouseX, lastMouseY, est);
   }
 
   function scheduleSamEstimate() {
     clearSamSettleTimeout();
     if (!settings.samCoverage || !samModeActive || lastMouseX === null || lastMouseY === null) return;
-    samSettleTimeout = setTimeout(calculateSamAtLastMouse, SAM_SETTLE_MS);
+    samSettleTimeout = setTimeout(calculateSamAtLastMouse, samSettleMs);
   }
 
   function handlePointerMove(e) {
@@ -1433,6 +1501,7 @@
   // spawn window when the game is NOT active.
   function ensureTeammateLoop() {
     if (teammateAnimationFrame !== null || !settings.teammateMarkers) return;
+    ensureLinuxEmojiFallback();
     teammateAnimationFrame = requestAnimationFrame(syncTeammateMarkers);
   }
 
@@ -4985,6 +5054,7 @@
 
   function ensureMasterLoop() {
     if (!masterLoopRunning && anyFeatureEnabled()) {
+      ensureLinuxEmojiFallback();
       masterLoopRunning = true;
       masterLoopFrame = requestAnimationFrame(runMasterLoop);
     }
@@ -5003,6 +5073,11 @@
   function applySettings(value) {
     const src = value && typeof value === "object" ? value : {};
     setSamCoverageEnabled(Boolean(src.samCoverage));
+    const delayRaw = Number(src.samHoverDelayMs);
+    settings.samHoverDelayMs = Number.isFinite(delayRaw)
+      ? Math.min(SAM_SETTLE_MAX_MS, Math.max(SAM_SETTLE_MIN_MS, Math.round(delayRaw)))
+      : SAM_SETTLE_MS;
+    samSettleMs = settings.samHoverDelayMs;
     setNukeGrouperEnabled(Boolean(src.nukeGrouper));
     setTeammateMarkersEnabled(Boolean(src.teammateMarkers));
     setIncomingNukeAlertEnabled(Boolean(src.incomingNukeAlert));
