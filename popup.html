@@ -40,13 +40,26 @@
                   <strong>SAM Coverage</strong>
                   <span class="badge badge--blue">☢ Atom only</span>
                 </span>
-                <small>With the Atom Bomb tool armed (8), rest your cursor on a tile for 1.5 s to see atoms needed, possible enemy SAM upgrades, and total gold cost.</small>
+                <small>With the Atom Bomb tool armed (8), rest your cursor on a tile to see atoms needed, possible SAM upgrades, and total gold cost. Counts every SAM covering the tile except your own.</small>
               </span>
               <span class="switch">
                 <input id="samCoverage" type="checkbox" />
                 <span class="track" aria-hidden="true"></span>
               </span>
             </label>
+
+            <div class="setting-row">
+              <span class="copy">
+                <span class="title-row">
+                  <strong>Hover delay</strong>
+                </span>
+                <small>Seconds to hold the cursor before the SAM label appears (0–5).</small>
+              </span>
+              <span class="number-wrap">
+                <input id="samHoverDelayMs" type="number" min="0" max="5" step="0.1" inputmode="decimal" value="1" />
+                <span class="unit" aria-hidden="true">s</span>
+              </span>
+            </div>
 
             <label class="toggle-card">
               <span class="copy">

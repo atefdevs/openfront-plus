@@ -8,6 +8,7 @@
   const UI_KEY = "openfrontPlusUi";
   const DEFAULT_SETTINGS = Object.freeze({
     samCoverage: true,
+    samHoverDelayMs: 1000,
     nukeGrouper: true,
     teammateMarkers: true,
     incomingNukeAlert: true,
@@ -73,6 +74,13 @@
     // toggles anything themselves the __touched marker makes it permanent.
     const out = {};
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
+      if (key === "samHoverDelayMs") {
+        const n = Number(source[key]);
+        out[key] = Number.isFinite(n)
+          ? Math.min(5000, Math.max(0, Math.round(n)))
+          : 1000;
+        continue;
+      }
       let v = source[key] === undefined
         ? Boolean(DEFAULT_SETTINGS[key])
         : Boolean(source[key]);
@@ -88,9 +96,22 @@
     return out;
   }
 
+  // Numeric (non-toggle) settings live in the same storage object but are
+  // edited through number inputs (seconds in the UI, ms in storage).
+  const NUMERIC_SETTINGS = Object.freeze({
+    samHoverDelayMs: { minMs: 0, maxMs: 5000, defaultMs: 1000 },
+  });
+
   function readForm() {
     const out = {};
     for (const id of SETTING_IDS) {
+      if (Object.hasOwn(NUMERIC_SETTINGS, id)) {
+        const input = document.getElementById(id);
+        const secs = input ? Number.parseFloat(input.value) : Number.NaN;
+        const ms = Number.isFinite(secs) ? Math.round(secs * 1000) : NUMERIC_SETTINGS[id].defaultMs;
+        out[id] = Math.min(NUMERIC_SETTINGS[id].maxMs, Math.max(NUMERIC_SETTINGS[id].minMs, ms));
+        continue;
+      }
       const input = document.getElementById(id);
       out[id] = input ? input.checked : false;
       if (touchedIds.has(id)) out[id + "__touched"] = true;
@@ -101,9 +122,14 @@
   function writeForm(settings) {
     for (const id of SETTING_IDS) {
       const input = document.getElementById(id);
-      if (input) {
-        input.checked = Boolean(settings[id]);
+      if (!input) continue;
+      if (Object.hasOwn(NUMERIC_SETTINGS, id)) {
+        const raw = Number(settings[id]);
+        const ms = Number.isFinite(raw) ? raw : NUMERIC_SETTINGS[id].defaultMs;
+        input.value = String(ms / 1000);
+        continue;
       }
+      input.checked = Boolean(settings[id]);
     }
     refreshAll();
   }
@@ -244,7 +270,10 @@
   }
 
   function setAll(on) {
+    // Enable all / Disable all only flips toggles — numeric values like the
+    // hover delay are left untouched.
     for (const id of SETTING_IDS) {
+      if (Object.hasOwn(NUMERIC_SETTINGS, id)) continue;
       const input = getInput(id);
       if (input) {
         input.checked = on;
@@ -286,6 +315,23 @@
   }
 
   /* ---------- wiring ---------- */
+
+  // Linux-only emoji fallback: Windows/macOS render color emoji natively, so
+  // only tag Linux. The CSS rule for `html.of-linux` merely extends the font
+  // stack — Windows rendering is byte-identical.
+  try {
+    const uaDataPlatform = String(navigator?.userAgentData?.platform ?? "").toLowerCase();
+    let isLinux = false;
+    if (uaDataPlatform) {
+      isLinux = uaDataPlatform.includes("linux");
+    } else {
+      const ua = String(navigator?.userAgent ?? "").toLowerCase();
+      const plat = String(navigator?.platform ?? "").toLowerCase();
+      isLinux = !ua.includes("cros") && !ua.includes("android") &&
+        (plat.includes("linux") || (ua.includes("linux") && !ua.includes("android")));
+    }
+    if (isLinux) document.documentElement.classList.add("of-linux");
+  } catch (_) {}
 
   for (const def of GROUP_DEFS) setupGroup(def);
   setupSections();
@@ -336,11 +382,13 @@
   });
 
   // Every real setting saves + refreshes; fake masters are handled by setupGroup.
+  // Numeric settings save on change without a touch marker (missing/invalid
+  // values always fall back to the default, so no rescue logic is needed).
   for (const id of SETTING_IDS) {
     const input = getInput(id);
     if (!input) continue;
     input.addEventListener("change", () => {
-      markTouched(id);
+      if (!Object.hasOwn(NUMERIC_SETTINGS, id)) markTouched(id);
       saveSettings();
       refreshAll();
     });
