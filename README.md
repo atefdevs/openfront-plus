@@ -147,7 +147,7 @@ information the game already knows.
 7. If an OpenFront tab was already open before installing, reload it once.
 
 ### Firefox
-The extension is already submitted to the Firefox Add-ons store. (https://addons.mozilla.org/en-US/firefox/addon/openfront/) if you want to download it.
+The extension is already submitted to the Firefox Add-ons store. (https://addons.mozilla.org/en-US/firefox/addon/openfront/ if you want to download it)
 
 ### Safari
 Not packaged yet — requires Apple's Xcode converter and Developer account (see table above). The code needs no changes, only the conversion step.
