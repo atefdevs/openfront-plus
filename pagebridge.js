@@ -5165,6 +5165,6 @@
 
   window.addEventListener("pagehide", stopAllFeatures, { once: true });
 
-  const BRIDGE_VERSION = "v2.0.0-opt2";
+  const BRIDGE_VERSION = "v4.5";
   window.postMessage({ source: PAGE_SOURCE, type: "READY", payload: { version: BRIDGE_VERSION } }, "*");
 })();
