@@ -452,6 +452,16 @@
         <div class="diag-body" id="diagBody"></div>
       </details>
     </main>
+    <div class="review-overlay" id="reviewOverlay" hidden>
+      <div class="review-card" role="dialog" aria-modal="true" aria-labelledby="reviewTitle">
+        <p class="review-title" id="reviewTitle">Enjoying the extension? Please review it!</p>
+        <div class="review-actions">
+          <button type="button" class="review-btn review-btn--primary" id="reviewSure">Sure, take me there</button>
+          <button type="button" class="review-btn" id="reviewLater">Later</button>
+          <button type="button" class="review-btn" id="reviewNo">No, thanks.</button>
+        </div>
+      </div>
+    </div>
     <script src="popup.js"></script>
   </body>
 </html>

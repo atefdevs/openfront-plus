@@ -241,7 +241,10 @@
       if (el) el.textContent = `${on}/${ids.length}`;
     }
     const countEl = document.getElementById("enabledCount");
-    if (countEl) countEl.textContent = `${totalOn} of ${SETTING_IDS.length} on`;
+    // Numeric settings (hover delay) are values, not toggles — the total
+    // counts toggles only so "Enable all" reads 21 of 21, not 21 of 22.
+    const totalToggles = SETTING_IDS.filter((id) => !Object.hasOwn(NUMERIC_SETTINGS, id)).length;
+    if (countEl) countEl.textContent = `${totalOn} of ${totalToggles} on`;
   }
 
   /* ---------- persistence ---------- */
@@ -420,5 +423,99 @@
     })
     .catch(() => {});
 
+  /* ---------- review nudge ---------- */
+
+  const REVIEW_KEY = "openfrontPlusReview";
+  const REVIEW_URL = "https://addons.mozilla.org/en-US/firefox/addon/openfront/";
+  const REVIEW_DAY_MS = 86400000;
+  const REVIEW_SNOOZE_OPENS = 5;
+  let reviewState = null;
+
+  function persistReview() {
+    try {
+      browser.storage.local.set({ [REVIEW_KEY]: reviewState });
+    } catch (_) {}
+  }
+
+  function hideReview() {
+    const overlay = document.getElementById("reviewOverlay");
+    if (overlay) overlay.hidden = true;
+  }
+
+  function showReview() {
+    const overlay = document.getElementById("reviewOverlay");
+    if (overlay) overlay.hidden = false;
+  }
+
+  function checkReviewPrompt() {
+    browser.storage.local
+      .get(REVIEW_KEY)
+      .then((stored) => {
+        const raw = stored?.[REVIEW_KEY];
+        reviewState = {
+          opens: 0,
+          state: "pending",
+          snoozedAt: 0,
+          snoozeOpens: 0,
+          ...(raw && typeof raw === "object" ? raw : {}),
+        };
+        reviewState.opens = (Number(reviewState.opens) || 0) + 1;
+        persistReview();
+        if (reviewState.state === "no" || reviewState.state === "done") return;
+        if (reviewState.state === "later") {
+          const opensSince = reviewState.opens - (Number(reviewState.snoozeOpens) || 0);
+          if (opensSince < REVIEW_SNOOZE_OPENS) return;
+          if (Date.now() - (Number(reviewState.snoozedAt) || 0) < REVIEW_DAY_MS) return;
+        } else if (reviewState.opens < 3) {
+          return;
+        }
+        showReview();
+      })
+      .catch(() => {});
+  }
+
+  document.getElementById("reviewSure")?.addEventListener("click", () => {
+    if (reviewState) {
+      reviewState.state = "done";
+      persistReview();
+    }
+    hideReview();
+    try {
+      const tabs = browser.tabs;
+      if (tabs && typeof tabs.create === "function") {
+        const opened = tabs.create({ url: REVIEW_URL });
+        if (opened && typeof opened.catch === "function") {
+          opened.catch(() => {
+            try { window.open(REVIEW_URL, "_blank"); } catch (_) {}
+          });
+        }
+      } else {
+        window.open(REVIEW_URL, "_blank");
+      }
+    } catch (_) {
+      try { window.open(REVIEW_URL, "_blank"); } catch (_) {}
+    }
+    try { window.close(); } catch (_) {}
+  });
+
+  document.getElementById("reviewLater")?.addEventListener("click", () => {
+    if (reviewState) {
+      reviewState.state = "later";
+      reviewState.snoozedAt = Date.now();
+      reviewState.snoozeOpens = reviewState.opens;
+      persistReview();
+    }
+    hideReview();
+  });
+
+  document.getElementById("reviewNo")?.addEventListener("click", () => {
+    if (reviewState) {
+      reviewState.state = "no";
+      persistReview();
+    }
+    hideReview();
+  });
+
   renderBridgeInfo();
+  checkReviewPrompt();
 })();
