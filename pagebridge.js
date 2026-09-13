@@ -1857,9 +1857,9 @@
 
   function alertTypeLabel(type) {
     if (type === MIRV_WARHEAD_TYPE) return "💥 MIRV warheads";
-    if (type === "Hydrogen Bomb") return "💣 Hydrogen";
+    if (type === "Hydrogen Bomb") return "💣 Hydro Bomb";
     if (type === "MIRV") return "🚀 MIRV carrier";
-    return "☢ Atom";
+    return "☢ Atom Bomb";
   }
 
   // ---------------- robust tile ownership ----------------
@@ -2214,20 +2214,19 @@
 
         // Direct hit: the target tile itself is yours. Otherwise (atom /
         // hydro / warhead only — carriers split first) check whether the
-        // blast footprint still reaches your land.
+        // blast footprint still reaches your land. Either way it's the same
+        // bomb row — a blast clipping your border is still a bomb hitting you.
         const direct = isTileOwnedByPlayer(game, me, targetTile);
-        let splash = false;
         if (!direct) {
           if (typeName === "MIRV") continue;
           const outer = getBlastOuterRadius(game, typeName);
           if (!blastTouchesMyTerritory(game, me, targetTile, outer)) continue;
-          splash = true;
         }
 
-        const groupKey = splash ? `${typeName}~splash` : typeName;
+        const groupKey = typeName;
         let group = incoming.get(groupKey);
         if (!group) {
-          group = { key: groupKey, typeName, splashAll: splash, count: 0, ticksArr: [], tiles: [], navs: [] };
+          group = { key: groupKey, typeName, count: 0, ticksArr: [], tiles: [], navs: [] };
           incoming.set(groupKey, group);
         }
         group.count++;
@@ -2271,7 +2270,6 @@
       rows.push({
         key: group.key,
         nukeType: typeName,
-        splashAll: group.splashAll,
         count: group.count,
         secondsMin,
         secondsMax,
@@ -2305,7 +2303,7 @@
     countEl.textContent = String(row.count);
     const typeEl = document.createElement("span");
     typeEl.className = "of-nuke-tools-alert-type";
-    typeEl.textContent = alertTypeLabel(row.nukeType) + (row.splashAll ? " ~splash" : "");
+    typeEl.textContent = alertTypeLabel(row.nukeType);
     labelEl.appendChild(countEl);
     labelEl.appendChild(typeEl);
 
@@ -2409,12 +2407,12 @@
   // death events first (reachedTarget = landed, otherwise intercepted);
   // anything unmatched falls back to the old last-timer heuristic.
   function notifyNukeResolved(panel, info) {
-    const { nukeType, count, secondsMin: lastSecs, splashAll } = info;
+    const { nukeType, count, secondsMin: lastSecs } = info;
     const deaths = takeDeathEvents(nukeType, count);
     const landed = deaths.filter(d => d.reachedTarget).length;
     const intercepted = deaths.length - landed;
     const unknown = count - deaths.length;
-    const label = alertTypeLabel(nukeType) + (splashAll ? " ~splash" : "");
+    const label = alertTypeLabel(nukeType);
     const suffix = (n) => n > 1 ? ` ×${n}` : "";
     if (landed > 0) {
       addNotification(panel, "landed", `💥 ${label} Nuke landed${suffix(landed)}`);
@@ -2468,7 +2466,7 @@
           }
           prevNukeData.clear();
           for (const row of newData) {
-            prevNukeData.set(row.key, { nukeType: row.nukeType, splashAll: row.splashAll, secondsMin: row.secondsMin, count: row.count });
+            prevNukeData.set(row.key, { nukeType: row.nukeType, secondsMin: row.secondsMin, count: row.count });
           }
           prevAlertData = structKey;
           panel.replaceChildren();
@@ -2489,7 +2487,7 @@
           }
         } else {
           for (const rowData of newData) {
-            prevNukeData.set(rowData.key, { nukeType: rowData.nukeType, splashAll: rowData.splashAll, secondsMin: rowData.secondsMin, count: rowData.count });
+            prevNukeData.set(rowData.key, { nukeType: rowData.nukeType, secondsMin: rowData.secondsMin, count: rowData.count });
           }
           if (newData.length === 0) {
             // nothing
@@ -5165,6 +5163,6 @@
 
   window.addEventListener("pagehide", stopAllFeatures, { once: true });
 
-  const BRIDGE_VERSION = "v4.5";
+  const BRIDGE_VERSION = "v4.6";
   window.postMessage({ source: PAGE_SOURCE, type: "READY", payload: { version: BRIDGE_VERSION } }, "*");
 })();

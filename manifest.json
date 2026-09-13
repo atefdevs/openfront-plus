@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Openfront+",
-  "version": "4.5",
+  "version": "4.6",
   "minimum_chrome_version": "105",
   "description": "QOL overlays for OpenFront: SAM coverage estimates, incoming-nuke alerts with intercept math, in-flight nuke grouping, airspace counts, enemy readiness, trade/naval partner stats, and gold/troop income panels.",
   "browser_specific_settings": {
