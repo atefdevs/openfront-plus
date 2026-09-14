@@ -754,12 +754,19 @@
   // emit per-tick unit updates, so the game's public motionPlans() map is the
   // freshest source for their progress: { len, idx } where idx is the path
   // index the unit sits on this tick.
+  // v34 stores motion-plan paths as Uint32Array, older builds as Array —
+  // accept any array-like with a length.
+  function isPathLike(p) {
+    return Boolean(p) && typeof p.length === "number" &&
+      (Array.isArray(p) || ArrayBuffer.isView(p));
+  }
+
   function getMotionPlanRec(game, numericId) {
     if (!game || numericId === null || !Number.isFinite(numericId)) return null;
     const plans = callMethod(game, "motionPlans");
     if (!plans || typeof plans.get !== "function") return null;
     const rec = plans.get(numericId);
-    if (!rec || !Array.isArray(rec.path) || rec.path.length === 0) return null;
+    if (!rec || !isPathLike(rec.path) || rec.path.length === 0) return null;
     return rec;
   }
 
@@ -809,11 +816,12 @@
   // waitTicks (only meaningful in the trajectory fallback — the plan's
   // startTick already includes them), and target tile.
   function getNukeNav(game, unit) {
-    const nav = { unitId: toFiniteNumber(callMethod(unit, "id"), null), points: null, curIdx: null, waitTicks: 0, targetTile: getNukeTargetTileForAlert(unit) };
+    const nav = { unitId: toFiniteNumber(callMethod(unit, "id"), null), points: null, curIdx: null, waitTicks: 0, targetTile: getNukeTargetTileForAlert(unit), launchTile: null };
     const prog = getMotionPlanProgress(game, toFiniteNumber(callMethod(unit, "id"), null));
     if (prog) {
       nav.points = prog.rec.path;
       nav.curIdx = prog.idx;
+      nav.launchTile = prog.rec.path.length > 0 ? prog.rec.path[0] : null;
     }
     const ns = callMethod(unit, "nukeState") ?? readProperty(unit, "nukeState") ?? null;
     if (ns) {
@@ -821,6 +829,11 @@
         const traj = readProperty(ns, "trajectory");
         if (Array.isArray(traj) && traj.length > 0) {
           nav.points = traj.map(t => readProperty(t, "tile"));
+          const first = traj[0];
+          const firstTile = readProperty(first, "tile");
+          nav.launchTile = firstTile !== undefined && firstTile !== null
+            ? firstTile
+            : (typeof first === "number" ? first : null);
           const idx = toFiniteNumber(readProperty(ns, "trajectoryIndex"), 0);
           nav.curIdx = Math.max(0, Math.min(nav.points.length - 1, idx));
           nav.waitTicks = Math.max(0, toFiniteNumber(readProperty(ns, "waitTicks"), 0));
@@ -846,9 +859,15 @@
     const dx0 = toFiniteNumber(callMethod(game, "x", defTile));
     const dy0 = toFiniteNumber(callMethod(game, "y", defTile));
     if (!Number.isFinite(dx0) || !Number.isFinite(dy0)) return [];
-    let sx = NaN, sy = NaN;
+    // Engine targetable rule (NukeExecution.isTargetable): a trajectory point
+    // counts only within 150 of the TARGET tile or of the LAUNCH tile — the
+    // source window is anchored at launch, not at the nuke's current position.
     const tx = nav.targetTile !== null ? toFiniteNumber(callMethod(game, "x", nav.targetTile)) : NaN;
     const ty = nav.targetTile !== null ? toFiniteNumber(callMethod(game, "y", nav.targetTile)) : NaN;
+    const lx = nav.launchTile !== null && nav.launchTile !== undefined
+      ? toFiniteNumber(callMethod(game, "x", nav.launchTile)) : NaN;
+    const ly = nav.launchTile !== null && nav.launchTile !== undefined
+      ? toFiniteNumber(callMethod(game, "y", nav.launchTile)) : NaN;
     const targetableSq = NUKE_TARGETABLE_RANGE * NUKE_TARGETABLE_RANGE;
     const remaining = pts.length - nav.curIdx;
     const stride = remaining > 240 ? 3 : remaining > 120 ? 2 : 1;
@@ -863,14 +882,10 @@
       const travel = Math.ceil((Math.abs(px - dx0) + Math.abs(py - dy0)) / missileSpeed);
       if (nukeAt < travel) continue;
       if ((px - dx0) ** 2 + (py - dy0) ** 2 > getSamEffectiveRange(game, defender, tick + nukeAt) ** 2) continue;
-      if (Number.isNaN(sx)) {
-        sx = toFiniteNumber(callMethod(game, "x", pts[nav.curIdx]));
-        sy = toFiniteNumber(callMethod(game, "y", pts[nav.curIdx]));
-      }
       const nearTgt = Number.isFinite(tx) && Number.isFinite(ty)
-        ? (px - tx) ** 2 + (py - ty) ** 2 <= targetableSq : true;
-      const nearSrc = Number.isFinite(sx) && Number.isFinite(sy)
-        ? (px - sx) ** 2 + (py - sy) ** 2 <= targetableSq : false;
+        ? (px - tx) ** 2 + (py - ty) ** 2 < targetableSq : true;
+      const nearSrc = Number.isFinite(lx) && Number.isFinite(ly)
+        ? (px - lx) ** 2 + (py - ly) ** 2 < targetableSq : false;
       if (!(nearTgt || nearSrc)) continue;
       const fireAt = nukeAt - travel;
       // Opportunities less than 2 ticks apart are redundant — one shot covers.
@@ -1086,8 +1101,8 @@
     return Number.isFinite(r) && r > 0 ? r : null;
   }
 
-  function getAtomExplosionRadius(game) { return getNukeMagnitudeRadius(game, "Atom Bomb") ?? 70; }
-  function getHydrogenExplosionRadius(game) { return getNukeMagnitudeRadius(game, "Hydrogen Bomb") ?? getAtomExplosionRadius(game) * 1.8; }
+  function getAtomExplosionRadius(game) { return getNukeMagnitudeRadius(game, "Atom Bomb") ?? 30; }
+  function getHydrogenExplosionRadius(game) { return getNukeMagnitudeRadius(game, "Hydrogen Bomb") ?? 100; }
 
   const BLAST_OUTER_FALLBACK = { "Atom Bomb": 30, "Hydrogen Bomb": 100, "MIRV Warhead": 18 };
   function getBlastOuterRadius(game, typeName) {
@@ -1573,6 +1588,12 @@
   let lastAlertScanAt = 0;
   let prevAlertData = "";
   let alertPanelVisible = false;
+  // Sorted ally id list from the last scan. Accepting an alliance cancels
+  // in-flight nukes between the new allies (AllianceRequestExecution), and
+  // those deletions surface as deadUnits with reachedTarget=false — identical
+  // to real intercepts. When the ally set changes, resolved rows rebuild
+  // silently instead of toasting false "Intercepted!" verdicts.
+  let prevAllyKey = null;
   // Rows keyed by nuke type — timers re-sort rows every scan, so positional
   // indexing would update the wrong elements whenever two rows swap.
   const currentAlertRows = new Map();
@@ -1734,13 +1755,13 @@
     if (!nav) return null;
     if (Number.isFinite(nav.unitId)) {
       const prog = getMotionPlanProgress(game, nav.unitId);
-      if (prog && prog.rec && Array.isArray(prog.rec.path) && prog.rec.path.length) {
+      if (prog && prog.rec && isPathLike(prog.rec.path) && prog.rec.path.length) {
         const idx = Math.max(0, Math.min(prog.rec.path.length - 1, prog.idx));
         const t = prog.rec.path[idx];
         if (Number.isFinite(t)) return t;
       }
     }
-    if (Array.isArray(nav.points) && Number.isFinite(nav.curIdx) && nav.points.length) {
+    if (isPathLike(nav.points) && Number.isFinite(nav.curIdx) && nav.points.length) {
       const t = nav.points[Math.max(0, Math.min(nav.points.length - 1, nav.curIdx))];
       if (Number.isFinite(t)) return t;
     }
@@ -1841,6 +1862,7 @@
     document.getElementById(ALERT_STYLE_ID)?.remove();
     blastTouchCache.clear();
     prevAlertData = "";
+    prevAllyKey = null;
     currentAlertRows.clear();
     prevNukeData.clear();
     deathEventsByTick.clear();
@@ -2047,19 +2069,10 @@
     return null;
   }
 
-  // ---------- keep-playing detection ----------
-  function isKeepPlayingPhase(game) {
-    const frameData = callMethod(game, "frameData") ?? readProperty(game, "frameData");
-    if (frameData) {
-      const keep = readProperty(frameData, "inKeepPlaying");
-      if (typeof keep === "boolean") return keep;
-    }
-    if (readProperty(game, "inKeepPlaying") === true) return true;
-    if (callMethod(game, "isGameOver") === true && callMethod(game, "canKeepPlaying") === true) return true;
-    return false;
-  }
-
   // ---------- friendly SAMs for the alert ----------
+  // v34 removed every keep-playing flag (isGameOver/canKeepPlaying/
+  // inKeepPlaying); the engine keeps SAMs engaging for allies after the game
+  // is decided, so defenders are always self-or-ally here.
   function collectFriendlySamsNearForAlert(game, targetTiles) {
     if (!Array.isArray(targetTiles) || targetTiles.length === 0) return [];
 
@@ -2067,18 +2080,12 @@
     const seenIds = new Set();
     const seenObjects = new WeakSet();
 
-    const onlySelf = isKeepPlayingPhase(game);
-
     const globalSams = getGameUnitsCached(game, "SAM Launcher");
     for (const sam of globalSams.units) {
       if (!sam || !isActiveFinishedUnit(sam)) continue;
       const owner = getUnitOwner(sam);
       const rel = getRelationToMe(game, owner);
-      if (onlySelf) {
-        if (rel !== "self") continue;
-      } else {
-        if (rel !== "self" && rel !== "ally") continue;
-      }
+      if (rel !== "self" && rel !== "ally") continue;
 
       const uid = getUnitId(sam);
       if (uid !== null) {
@@ -2396,6 +2403,20 @@
     }, 2500);
   }
 
+  // Sorted ally id list for this scan (null when unreadable — never
+  // suppresses on unknown, only on an observed change).
+  function getMyAllyKey(game) {
+    try {
+      const me = getMyPlayer(game);
+      if (!me) return null;
+      const allies = callMethod(me, "allies");
+      if (!Array.isArray(allies)) return null;
+      return allies.map(a => getPlayerId(a)).sort().join(",");
+    } catch (_) {
+      return null;
+    }
+  }
+
   // True when a carrier just split into warheads instead of being intercepted
   // or landing (no "MIRV" row, but warheads present).
   function mirvSplitHappened(newData) {
@@ -2454,6 +2475,13 @@
         const structKey = newData.map(r => `${r.key}|${r.count}`).sort().join(",");
         const newNukeTypes = new Set(newData.map(r => r.key));
 
+        // Alliance changes cancel in-flight nukes diplomatically, not by
+        // interception — silence resolved-row verdicts for this cycle so a
+        // fresh alliance doesn't toast false "Intercepted!" notifications.
+        const allyKey = getMyAllyKey(context.game);
+        const allyChanged = prevAllyKey !== null && allyKey !== null && allyKey !== prevAllyKey;
+        prevAllyKey = allyKey;
+
         if (structKey !== prevAlertData) {
           const splitToWarheads = mirvSplitHappened(newData);
           for (const [oldKey, oldData] of prevNukeData.entries()) {
@@ -2461,6 +2489,7 @@
               // A MIRV carrier "disappearing" while warheads appear means it
               // split — that's not an intercept or a landing.
               if (oldKey === "MIRV" && splitToWarheads) continue;
+              if (allyChanged) continue;
               notifyNukeResolved(panel, oldData);
             }
           }
@@ -3359,7 +3388,12 @@
       for (const u of res.units) {
         const owner = getUnitOwner(u) ?? null;
         if (!owner) continue;
-        const dst = callMethod(u, "targetUnit") ?? null;
+        // v34 UnitView exposes the destination port id via targetUnitId()
+        // (no targetUnit() method); older builds expose targetUnit() directly.
+        const dstId = toFiniteNumber(callMethod(u, "targetUnitId"), null);
+        const dst = dstId !== null && game
+          ? (callMethod(game, "unit", dstId) ?? callMethod(u, "targetUnit") ?? null)
+          : (callMethod(u, "targetUnit") ?? null);
         const dstOwner = dst ? (getUnitOwner(dst) ?? null) : null;
         if (!dstOwner) continue;
         const mine = isSamePlayer(owner, me);
@@ -4141,7 +4175,11 @@
       t.lastTile = tile;
       if (owner) { if (!t.firstOwner) t.firstOwner = owner; t.owner = owner; }
       // The ship's own destination port is the ground truth for arrival.
-      const dst = callMethod(u, "targetUnit") ?? null;
+      // v34 UnitView exposes it as targetUnitId(); older builds as targetUnit().
+      const dstIdRaw = toFiniteNumber(callMethod(u, "targetUnitId"), null);
+      const dst = dstIdRaw !== null && game
+        ? (callMethod(game, "unit", dstIdRaw) ?? callMethod(u, "targetUnit") ?? null)
+        : (callMethod(u, "targetUnit") ?? null);
       if (dst) {
         const dstId = getUnitId(dst);
         const dstTile = getUnitTile(dst);
@@ -5163,6 +5201,6 @@
 
   window.addEventListener("pagehide", stopAllFeatures, { once: true });
 
-  const BRIDGE_VERSION = "v4.6";
+  const BRIDGE_VERSION = "v4.8";
   window.postMessage({ source: PAGE_SOURCE, type: "READY", payload: { version: BRIDGE_VERSION } }, "*");
 })();
