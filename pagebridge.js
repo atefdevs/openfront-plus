@@ -104,6 +104,10 @@
   // UnitType.TransportShip serializes as "Transport" — no "Ship" suffix.
   const TRANSPORT_SHIP_TYPE = "Transport";
   const TRAIN_CARRIAGE_TYPE = "Carriage";
+  // Cosmetic rear unit of every train (one per train, alongside the Engine).
+  // It visits the same stations but pays nothing extra — tracking it would
+  // double every train payout.
+  const TRAIN_TAIL_TYPE = "TailEngine";
   // Trains move several tiles a tick, so a stop can slip between our 100ms
   // samples; give the engine-tile match this much slack.
   const TRAIN_STATION_RADIUS = 3;
@@ -2787,6 +2791,7 @@
       if (getUnitType(u) !== "Missile Silo") continue;
       const owner = getUnitOwner(u);
       if (!owner || !isSamePlayer(owner, player)) continue;
+      if (callMethod(u, "isUnderConstruction") === true) continue;
       const s = getSiloReadiness(game, u);
       if (s === null) continue;
       st.silos++;
@@ -4261,9 +4266,9 @@
       if (id === null) continue;
       seen.add(id);
       const ttype = callMethod(u, "trainType");
-      // Engines pull; carriages just follow. Some builds don't expose
-      // trainType, so unknown units count as engines.
-      if (ttype === TRAIN_CARRIAGE_TYPE) continue;
+      // Engines pull; carriages just follow and the tail engine is cosmetic.
+      // Some builds don't expose trainType, so unknown units count as engines.
+      if (ttype === TRAIN_CARRIAGE_TYPE || ttype === TRAIN_TAIL_TYPE) continue;
       const tile = getUnitTile(u);
       const owner = getUnitOwner(u) ?? null;
       const t = trainTrackers.get(id) || { stops: 0, lastStopKey: null, lastTile: null, owner: null };
@@ -5201,6 +5206,6 @@
 
   window.addEventListener("pagehide", stopAllFeatures, { once: true });
 
-  const BRIDGE_VERSION = "v4.8";
+  const BRIDGE_VERSION = "v4.9";
   window.postMessage({ source: PAGE_SOURCE, type: "READY", payload: { version: BRIDGE_VERSION } }, "*");
 })();
