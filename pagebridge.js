@@ -20,6 +20,8 @@
   const GOLD_INCOME_STYLE_ID = "of-nuke-tools-gold-income-style";
   const ENEMY_NUKES_HOVER_ID = "of-nuke-tools-enemy-nukes-hover";
   const INTEL_DIPLOMACY_HOVER_ID = "of-nuke-tools-intel-diplomacy-hover";
+  const INTEL_DOOMSDAY_HOVER_ID = "of-nuke-tools-intel-doomsday-hover";
+  const INTEL_TEAM_HOVER_ID = "of-nuke-tools-intel-team-hover";
   const INTEL_READINESS_HOVER_ID = "of-nuke-tools-intel-readiness-hover";
   const INTEL_TARGETS_HOVER_ID = "of-nuke-tools-intel-targets-hover";
   const TRADE_PARTNER_HOVER_ID = "of-nuke-tools-trade-partner-hover";
@@ -135,8 +137,10 @@
     personalNukeTracker: false,
     enemyNukeReadiness: false,
     intelDiplomacy: false,
+    intelDoomsday: false,
     intelReadinessPct: false,
     intelTargets: false,
+    intelTeamTotals: false,
     tradeIncome: false,
     tradeCaptures: false,
     tradeTransports: false,
@@ -165,6 +169,10 @@
   let goldSampleHistory = [];
   let lastAliveCount = 0;
   let lootHoldUntil = 0;
+  // Conquest payouts received (gold field of frameData conquestEvents, which
+  // the engine filters to your own kills). Subtracted from the cumulative
+  // earned counter so one-time loot never inflates the income rate.
+  let conquestLootEvents = [];
   // Source-split events (which bucket a payout lands in)
   let shipIncomeEvents = []; // normal port-to-port arrivals -> "ports"
   let warshipIncomeEvents = []; // captured-ship arrivals -> "warships"
@@ -3016,7 +3024,7 @@
 
   // === Player intel rows (hover overlay) ===
   // Lightweight rows on player-info-overlay, each behind its own sub-toggle:
-  // diplomacy badges (embargo / doomsday — things the game's own overlay
+  // embargo badges and doomsday badges (things the game's own overlay
   // never shows), launcher readiness %, and targeting info (things the
   // game's own overlay never shows).
   let intelObservedOverlay = null;
@@ -3043,11 +3051,62 @@
     return st;
   }
 
+  // Team totals for the hovered player's team (team games only): finished
+  // structure counts plus measured income summed across every teammate.
+  // Returns the row text, or null when the player has no team or nothing is
+  // known yet. Income needs the per-player gold sampling (shared with the
+  // income overlay); structures alone still render when it is off.
+  function getTeamTotals(game, player) {
+    const team = getPlayerTeam(player);
+    if (!team) return null;
+    const counts = { sams: 0, silos: 0, cities: 0, ports: 0 };
+    let perSec = 0, incomeKnown = false;
+    try {
+      const buckets = [
+        ["SAM Launcher", "sams"], ["Missile Silo", "silos"],
+        ["City", "cities"], ["Port", "ports"],
+      ];
+      for (const [cacheType, bucket] of buckets) {
+        const res = getGameUnitsCached(game, cacheType);
+        if (!res.available) return null;
+        for (const u of res.units) {
+          if (getUnitType(u) !== cacheType) continue;
+          if (callMethod(u, "isUnderConstruction") === true) continue;
+          const owner = getUnitOwner(u);
+          if (!owner || getPlayerTeam(owner) !== team) continue;
+          counts[bucket]++;
+        }
+      }
+      for (const p of getPlayerViews(game)) {
+        if (!p || getPlayerTeam(p) !== team) continue;
+        const rec = otherGoldTrackers.get(getPlayerId(p));
+        const r = exactRateFromSamples(rec?.samples, null) ?? grossRateFromSamples(rec?.samples);
+        if (r) {
+          perSec += r.perSec;
+          incomeKnown = true;
+        }
+      }
+    } catch (_) {
+      return null;
+    }
+    if (counts.sams + counts.silos + counts.cities + counts.ports === 0 && !incomeKnown) return null;
+    const name = team.length > 18 ? team.slice(0, 17) + "…" : team;
+    const parts = [];
+    if (counts.sams > 0) parts.push(`🛡 ${counts.sams}`);
+    if (counts.silos > 0) parts.push(`☢ ${counts.silos}`);
+    if (counts.cities > 0) parts.push(`🏙 ${counts.cities}`);
+    if (counts.ports > 0) parts.push(`⚓ ${counts.ports}`);
+    if (incomeKnown) parts.push(`+${formatGold(perSec)}/s`);
+    return `👥 ${name}: ${parts.join(" · ")}`;
+  }
+
   function ensureIntelHover(game, overlay) {
     const removeAll = () => {
       removeOverlayRow(INTEL_DIPLOMACY_HOVER_ID);
+      removeOverlayRow(INTEL_DOOMSDAY_HOVER_ID);
       removeOverlayRow(INTEL_READINESS_HOVER_ID);
       removeOverlayRow(INTEL_TARGETS_HOVER_ID);
+      removeOverlayRow(INTEL_TEAM_HOVER_ID);
       lastIntelPlayerKey = null;
       lastIntelScanAt = 0;
     };
@@ -3080,15 +3139,22 @@
             segs.push("🚫 Embargo in place");
           }
         }
-        if (callMethod(player, "inDoomsdayClock") === true) {
-          segs.push(callMethod(player, "isDecaying") === true ? "☠ Decaying" : "☠ Doomsday clock");
-        }
         if (segs.length) {
           ensureOverlayRow(card, INTEL_DIPLOMACY_HOVER_ID, tradeRowClasses(false, warn),
-            "Diplomacy state the game's overlay doesn't show: embargoes in either direction, and whether they're on the doomsday clock.",
+            "Embargo state the game's overlay doesn't show: who embargoes whom, in either direction.",
             segs.join(" · "));
         } else {
           removeOverlayRow(INTEL_DIPLOMACY_HOVER_ID);
+        }
+      }
+
+      if (settings.intelDoomsday) {
+        if (callMethod(player, "inDoomsdayClock") === true) {
+          ensureOverlayRow(card, INTEL_DOOMSDAY_HOVER_ID, tradeRowClasses(false),
+            "Whether this player is on the doomsday clock (anti-stall troop decay) or already rotting away.",
+            callMethod(player, "isDecaying") === true ? "☠ Decaying" : "☠ Doomsday clock");
+        } else {
+          removeOverlayRow(INTEL_DOOMSDAY_HOVER_ID);
         }
       }
 
@@ -3110,6 +3176,18 @@
           removeOverlayRow(INTEL_READINESS_HOVER_ID);
         }
       }
+
+      if (settings.intelTeamTotals) {
+        const teamText = getTeamTotals(game, player);
+        if (teamText) {
+          ensureOverlayRow(card, INTEL_TEAM_HOVER_ID, tradeRowClasses(false),
+            "Team totals: finished structures and measured income summed across every teammate. Team games only.",
+            teamText);
+        } else {
+          removeOverlayRow(INTEL_TEAM_HOVER_ID);
+        }
+      }
+
     }
 
     if (settings.intelTargets) {
@@ -3128,8 +3206,10 @@
     }
 
     if (!settings.intelDiplomacy) removeOverlayRow(INTEL_DIPLOMACY_HOVER_ID);
+    if (!settings.intelDoomsday) removeOverlayRow(INTEL_DOOMSDAY_HOVER_ID);
     if (!settings.intelReadinessPct) removeOverlayRow(INTEL_READINESS_HOVER_ID);
     if (!settings.intelTargets) removeOverlayRow(INTEL_TARGETS_HOVER_ID);
+    if (!settings.intelTeamTotals) removeOverlayRow(INTEL_TEAM_HOVER_ID);
   }
 
   // Names of players this player is currently attacking (their `targets`
@@ -3161,7 +3241,7 @@
     intelOverlayObserver = new MutationObserver((mutations) => {
       let foreign = false;
       for (const m of mutations) {
-        if (m.target && (m.target.id === INTEL_DIPLOMACY_HOVER_ID || m.target.id === INTEL_READINESS_HOVER_ID || m.target.id === INTEL_TARGETS_HOVER_ID)) continue;
+        if (m.target && (m.target.id === INTEL_DIPLOMACY_HOVER_ID || m.target.id === INTEL_DOOMSDAY_HOVER_ID || m.target.id === INTEL_READINESS_HOVER_ID || m.target.id === INTEL_TARGETS_HOVER_ID || m.target.id === INTEL_TEAM_HOVER_ID)) continue;
         foreign = true;
         break;
       }
@@ -3179,14 +3259,16 @@
     }
     intelObservedOverlay = null;
     removeOverlayRow(INTEL_DIPLOMACY_HOVER_ID);
+    removeOverlayRow(INTEL_DOOMSDAY_HOVER_ID);
     removeOverlayRow(INTEL_READINESS_HOVER_ID);
     removeOverlayRow(INTEL_TARGETS_HOVER_ID);
+    removeOverlayRow(INTEL_TEAM_HOVER_ID);
     lastIntelPlayerKey = null;
     lastIntelScanAt = 0;
   }
 
   function anyIntelFeature() {
-    return settings.intelDiplomacy || settings.intelReadinessPct || settings.intelTargets;
+    return settings.intelDiplomacy || settings.intelDoomsday || settings.intelReadinessPct || settings.intelTargets || settings.intelTeamTotals;
   }
 
   function syncIntelHover() {
@@ -3198,6 +3280,9 @@
     if (!context?.game || !isGameActive(context.game)) {
       teardownIntelHover();
     } else {
+      // Team totals need the same per-player gold sampling as the income
+      // overlay, even when that overlay itself is off.
+      if (settings.intelTeamTotals) maybeSampleOtherGold(context.game);
       setupIntelObserver(context.game);
       ensureIntelHover(context.game, document.querySelector("player-info-overlay"));
     }
@@ -3205,6 +3290,18 @@
 
   function setIntelDiplomacyEnabled(enabled) {
     settings.intelDiplomacy = !!enabled;
+    if (!anyIntelFeature()) teardownIntelHover();
+    ensureMasterLoop();
+  }
+
+  function setIntelDoomsdayEnabled(enabled) {
+    settings.intelDoomsday = !!enabled;
+    if (!anyIntelFeature()) teardownIntelHover();
+    ensureMasterLoop();
+  }
+
+  function setIntelTeamTotalsEnabled(enabled) {
+    settings.intelTeamTotals = !!enabled;
     if (!anyIntelFeature()) teardownIntelHover();
     ensureMasterLoop();
   }
@@ -3314,10 +3411,17 @@
         if (!t) {
           t = { firstOwner: owner, owner };
           navalTrackers.tradeShips.set(id, t);
-        } else if (!t.captured && t.owner && !isSamePlayer(t.owner, owner)) {
-          // owner changed => `owner` captured this ship from `t.owner`.
-          t.captured = true;
-          recordAttribution(me, t.owner, owner, "capturedTheirs", "capturedMine");
+        } else if (t.owner && !isSamePlayer(t.owner, owner)) {
+          // Owner changed => `owner` seized this ship from `t.owner`. A
+          // retake (back to the first owner) is not a capture — the game
+          // stopped crediting those in v34.11 — so it counts nothing, and
+          // resets the flag so the next real seizure counts fresh.
+          if (t.firstOwner && isSamePlayer(owner, t.firstOwner)) {
+            t.captured = false;
+          } else if (!t.captured) {
+            t.captured = true;
+            recordAttribution(me, t.owner, owner, "capturedTheirs", "capturedMine");
+          }
         }
         t.owner = owner;
       }
@@ -3568,7 +3672,8 @@
     }
     if (settings.overlayGoldIncome) {
       const rec = otherGoldTrackers.get(pid);
-      const gross = grossRateFromSamples(rec?.samples);
+      const exactOther = exactRateFromSamples(rec?.samples, null);
+      const gross = exactOther ?? grossRateFromSamples(rec?.samples);
       let text, title;
       if (!gross) {
         text = "💰 Income: sampling…";
@@ -3609,7 +3714,9 @@
         if (war >= 1) segs.push(`💥 ${formatGold(war)}/s`);
         if (fac >= 1) segs.push(`🏭 ${formatGold(fac)}/s`);
         if (segs.length > 0) text += ` — ${segs.join(" · ")}`;
-        title = "Their measured gold income over the last 60 s (same model as your Gold Income panel). Breakdown: base = passive rate from the lobby settings · ⚓ ports = trade ships that arrived at their ports or theirs arriving elsewhere · 💥 warships = trade ships their warships captured and brought in · 🏭 factories = train stops that paid them (their trains stopping anywhere, plus other trains stopping at their cities/ports)." +
+        title = (exactOther
+          ? "Their gold income over the last 60 s, from the game's own cumulative counters (same figure as the leaderboard). Breakdown: "
+          : "Their measured gold income over the last 60 s (same model as your Gold Income panel). Breakdown: ") + "base = passive rate from the lobby settings · ⚓ ports = trade ships that arrived at their ports or theirs arriving elsewhere · 💥 warships = trade ships their warships captured and brought in · 🏭 factories = train stops that paid them (their trains stopping anywhere, plus other trains stopping at their cities/ports)." +
           (isExact ? " Split read from the game's own per-source counters." : " Split estimated from detected payouts.");
       }
       ensureOverlayRow(card, GOLD_INCOME_HOVER_ID, tradeRowClasses(false), title, text);
@@ -3731,8 +3838,9 @@
   // The game is canvas-rendered, so there's nothing to hook next to the gold
   // counter — hence a draggable fixed panel (position kept in localStorage).
   //
-  // The total is sampled from the player's own gold deltas (that's the number
-  // to trust), then apportioned into base / ports / warships / factories from
+  // The total comes from the engine's own cumulative earned counter (exact,
+  // minus conquest loot), then apportioned into base / ports / warships /
+  // factories from
   // source events valued with Config.tradeShipGold / Config.trainGold. A
   // tracking miss degrades the split, never the total. Warship income is its
   // own bucket (captured trade ships, paid to the capturer on arrival).
@@ -3857,6 +3965,7 @@
     lastGoldSampleAt       = 0;
     lastAliveCount         = 0;
     lootHoldUntil          = 0;
+    conquestLootEvents     = [];
     shipIncomeEvents       = [];
     warshipIncomeEvents    = [];
     factoryIncomeEvents    = [];
@@ -3913,6 +4022,15 @@
       lootHoldUntil = Math.max(lootHoldUntil, now + GOLD_LOOT_HOLD_MS);
       for (const s of goldSampleHistory) {
         if (now - s.ts < GOLD_LOOT_HOLD_MS) s.lootHold = true;
+      }
+      let lootGold = 0;
+      for (const c of conquests) {
+        lootGold += Math.max(0, toFiniteNumber(readProperty(c, "gold"), 0));
+      }
+      if (lootGold > 0) conquestLootEvents.push({ gold: lootGold, ts: now });
+      const lootCutoff = now - GOLD_SAMPLE_WINDOW_MS;
+      while (conquestLootEvents.length > 0 && conquestLootEvents[0].ts < lootCutoff) {
+        conquestLootEvents.shift();
       }
     }
     const lootHold = now < lootHoldUntil;
@@ -4103,7 +4221,7 @@
   // window, sampled at a lower rate (250ms) since it runs for all players.
   function maybeSampleOtherGold(game) {
     const now = performance.now();
-    if (!settings.overlayGoldIncome) return;
+    if (!settings.overlayGoldIncome && !settings.intelTeamTotals) return;
     if (now - lastOtherGoldSampleAt < 250) return;
     lastOtherGoldSampleAt = now;
     for (const p of getPlayerViews(game)) {
@@ -4178,7 +4296,11 @@
         if (d > 0) t.dist += d;
       }
       t.lastTile = tile;
-      if (owner) { if (!t.firstOwner) t.firstOwner = owner; t.owner = owner; }
+      if (owner) {
+        if (!t.firstOwner) t.firstOwner = owner;
+        else if (t.owner && !isSamePlayer(t.owner, owner)) t.seized = true;
+        t.owner = owner;
+      }
       // The ship's own destination port is the ground truth for arrival.
       // v34 UnitView exposes it as targetUnitId(); older builds as targetUnit().
       const dstIdRaw = toFiniteNumber(callMethod(u, "targetUnitId"), null);
@@ -4219,7 +4341,10 @@
           // Engine payout rules (TradeShipExecution.complete): a normal
           // arrival pays the FULL gold to both the source-port owner and the
           // destination-port owner; a captured ship pays only its capturer.
+          // A retaken ship (seized before, now home) pays only its owner as
+          // a normal port arrival — no piracy gold (v34.11).
           const captured = t.firstOwner && t.owner && !isSamePlayer(t.firstOwner, t.owner);
+          const returnedHome = !captured && t.seized === true;
           let dist = t.dist;
           if (t.firstTile !== null && dstTile !== null) {
             const straight = tileDistance(game, t.firstTile, dstTile);
@@ -4228,7 +4353,7 @@
           const gold = toFiniteNumber(callMethod(cfg, "tradeShipGold", dist, t.owner || me), 0);
           if (gold > 0) {
             const bucket = captured ? "warships" : "ports";
-            const recipients = captured
+            const recipients = (captured || returnedHome)
               ? [t.owner]
               : [...new Set([t.owner, dstOwner].filter(Boolean))];
             for (const rec of recipients) {
@@ -4378,6 +4503,32 @@
     return grossRateFromSamples(goldSampleHistory);
   }
 
+  // Exact total from the engine's cumulative earned counter: (earned now -
+  // earned then - conquest loot received in between) / elapsed. Spending
+  // never touches the counter, so no delta filtering is needed and the
+  // number matches the leaderboard's Gold Income column. Pass loot events to
+  // exclude one-time loot (only trackable for yourself — frameData exposes
+  // just your own kills); without them the total still beats sampling
+  // because spending noise is gone. Null until the window holds usable data.
+  function exactRateFromSamples(samples, lootEvents) {
+    if (!samples || samples.length < 2) return null;
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    const elapsedSec = (last.ts - first.ts) / 1000;
+    if (!(elapsedSec >= 2)) return null;
+    const a = first.earned, b = last.earned;
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+    let loot = 0;
+    if (Array.isArray(lootEvents)) {
+      for (const e of lootEvents) {
+        if (e.ts >= first.ts) loot += e.gold;
+      }
+    }
+    const total = (b - a - loot) / elapsedSec;
+    if (!Number.isFinite(total) || total < 0) return null;
+    return { perSec: total, perMin: total * 60 };
+  }
+
   // Exact per-source rates from the engine's own cumulative counters
   // (tradeGold = ships, trainGold = trains, piracyGold = captures). Returns
   // null until the window holds usable counter data, so callers fall back to
@@ -4399,21 +4550,27 @@
   }
 
   // Read the engine's cumulative per-source counters for one player (nulls
-  // when the client doesn't expose them).
+  // when the client doesn't expose them). `earned` is the all-sources total
+  // (workers, trade, trains, piracy, conquest, donations) the leaderboard's
+  // own Gold Income column is built from.
   function readGoldCounters(p) {
-    if (!p) return { trade: null, train: null, piracy: null };
+    if (!p) return { trade: null, train: null, piracy: null, earned: null };
     return {
       trade: toFiniteNumber(callMethod(p, "tradeGold"), null),
       train: toFiniteNumber(callMethod(p, "trainGold"), null),
       piracy: toFiniteNumber(callMethod(p, "piracyGold"), null),
+      earned: toFiniteNumber(callMethod(p, "goldEarned"), null),
     };
   }
 
   function computeGoldRates(game) {
-    // Sampled gross is the trustworthy total; the split only apportions it, so
-    // a tracking miss never drops the number — worst case the label degrades.
+    // The trustworthy total is the engine's earned counter (exact and
+    // leaderboard-identical); sampled gold deltas are the fallback for
+    // clients without counters. The split only apportions it, so a tracking
+    // miss never drops the number — worst case the label degrades.
     const me = getMyPlayer(game);
-    const gross = computeGoldGrossRate();
+    const gross = exactRateFromSamples(goldSampleHistory, conquestLootEvents)
+      ?? computeGoldGrossRate();
     const split = me ? measureSourceSplit(game, me) : null;
     // Prefer the engine's own cumulative counters when they arrive — exact
     // per-source rates, no payout detection involved. Otherwise fall back to
@@ -4675,7 +4832,17 @@
       if (!Number.isFinite(max) || max <= 0) return null;
       let toAdd = 10 + Math.pow(troops, 0.73) / 4;
       toAdd *= 1 - troops / max;
-      if (getPlayerType(me) === "BOT") toAdd *= 0.5;
+      // Bot and nation difficulty multipliers, mirroring troopIncreaseRate.
+      // Game difficulty comes from the lobby config; humans get no multiplier.
+      const pt = getPlayerType(me);
+      if (pt === "BOT") {
+        toAdd *= 0.5;
+      } else if (pt === "NATION") {
+        const diff = String(readProperty(callMethod(cfg, "gameConfig"), "difficulty") ?? "").toUpperCase();
+        if (diff === "EASY") toAdd *= 0.9;
+        else if (diff === "MEDIUM") toAdd *= 0.95;
+        else if (diff === "IMPOSSIBLE") toAdd *= 1.05;
+      }
       toAdd = Math.max(0, Math.min(toAdd, max - troops));
       if (!Number.isFinite(toAdd)) return null;
       // Same convention: per-tick value displayed as "/s".
@@ -5079,7 +5246,7 @@
       if (settings.incomingNukeAlert) syncIncomingNukeAlert();
       if (settings.globalNukeActivity) syncGlobalNukeActivity();
       if (settings.enemyNukeReadiness) syncEnemyNukes();
-      if (settings.intelDiplomacy || settings.intelReadinessPct || settings.intelTargets) syncIntelHover();
+      if (settings.intelDiplomacy || settings.intelDoomsday || settings.intelReadinessPct || settings.intelTargets || settings.intelTeamTotals) syncIntelHover();
       if (settings.tradeIncome || settings.tradeCaptures || settings.tradeTransports || settings.tradeWarships ||
           settings.overlayTroopRate || settings.overlayGoldIncome) syncTradePartnerIncome();
       if (settings.goldPerSecond || settings.goldPerMinute) syncGoldIncome();
@@ -5126,6 +5293,8 @@
     setPersonalNukeTrackerEnabled(Boolean(src.personalNukeTracker));
     setEnemyNukeReadinessEnabled(Boolean(src.enemyNukeReadiness));
     setIntelDiplomacyEnabled(Boolean(src.intelDiplomacy));
+    setIntelDoomsdayEnabled(Boolean(src.intelDoomsday));
+    setIntelTeamTotalsEnabled(Boolean(src.intelTeamTotals));
     setIntelReadinessPctEnabled(Boolean(src.intelReadinessPct));
     setIntelTargetsEnabled(Boolean(src.intelTargets));
     setTradeIncomeEnabled(Boolean(src.tradeIncome));
@@ -5206,6 +5375,6 @@
 
   window.addEventListener("pagehide", stopAllFeatures, { once: true });
 
-  const BRIDGE_VERSION = "v4.9";
+  const BRIDGE_VERSION = "v5.0";
   window.postMessage({ source: PAGE_SOURCE, type: "READY", payload: { version: BRIDGE_VERSION } }, "*");
 })();

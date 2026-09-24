@@ -16,12 +16,23 @@
         </span>
       </header>
 
+      <div class="whatsnew" id="whatsnew" hidden>
+        <p class="whatsnew-title" id="whatsnewTitle"></p>
+        <div class="whatsnew-body" id="whatsnewBody"></div>
+        <button type="button" class="review-btn review-btn--primary whatsnew-btn" id="whatsnewDismiss">Got it</button>
+      </div>
+
       <div class="toolbar">
         <span class="enabled-count" id="enabledCount" aria-live="polite"></span>
         <span class="toolbar-spacer"></span>
         <button type="button" class="link-btn" id="enableAll">Enable all</button>
         <button type="button" class="link-btn" id="disableAll">Disable all</button>
         <button type="button" class="link-btn" id="resetDefaults">Reset</button>
+      </div>
+
+      <div class="profile-row" aria-label="Setting profiles">
+        <span class="profile-label">Profile</span>
+        <span class="profile-btns" id="profileBtns"></span>
       </div>
 
       <!-- ============ NUKES & COMBAT ============ -->
@@ -285,11 +296,31 @@
                 <div class="sub-stack">
                   <label class="toggle-card toggle-card--sub">
                     <span class="copy">
-                      <span class="title-row"><strong>Embargo &amp; Doomsday Badges</strong></span>
-                      <small>Who embargoes whom, plus doomsday-clock status.</small>
+                      <span class="title-row"><strong>Embargo Badges</strong></span>
+                      <small>Who embargoes whom, either direction.</small>
                     </span>
                     <span class="switch">
                       <input id="intelDiplomacy" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Doomsday Badges</strong></span>
+                      <small>Doomsday-clock and decaying status.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="intelDoomsday" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Team Totals</strong></span>
+                      <small>Team games: their team's structures and income, summed.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="intelTeamTotals" type="checkbox" />
                       <span class="track" aria-hidden="true"></span>
                     </span>
                   </label>

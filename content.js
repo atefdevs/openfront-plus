@@ -17,6 +17,8 @@
     personalNukeTracker: true,
     enemyNukeReadiness: false,
     intelDiplomacy: true,
+    intelDoomsday: true,
+    intelTeamTotals: true,
     intelReadinessPct: true,
     intelTargets: true,
     tradeIncome: true,

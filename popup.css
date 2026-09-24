@@ -131,6 +131,57 @@ body {
   outline-offset: 1px;
 }
 
+/* ---------- profiles ---------- */
+
+.profile-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 0 2px;
+}
+
+.profile-label {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.profile-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.profile-btn {
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.profile-btn:hover {
+  border-color: var(--border-hover);
+  color: var(--text);
+}
+
+.profile-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-deep);
+  color: var(--accent-soft);
+}
+
+.profile-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
 /* ---------- sections ---------- */
 
 .collapsible-section {
@@ -570,6 +621,47 @@ body {
   background: rgba(0, 0, 0, 0.25);
   line-height: 1.6;
   word-break: break-word;
+}
+
+/* ---------- what's new ---------- */
+
+.whatsnew {
+  margin-bottom: 10px;
+  padding: 12px 12px 11px;
+  border: 1px solid var(--border-on);
+  border-radius: 11px;
+  background: var(--card);
+}
+
+.whatsnew[hidden] {
+  display: none;
+}
+
+.whatsnew-title {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  font-weight: 800;
+}
+
+.whatsnew-ver {
+  margin: 8px 0 2px;
+  color: var(--accent-soft);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.whatsnew-body ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.whatsnew-btn {
+  width: 100%;
+  margin-top: 10px;
 }
 
 /* ---------- review nudge ---------- */

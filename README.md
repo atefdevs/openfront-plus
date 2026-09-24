@@ -64,8 +64,10 @@ loaded silos but not enough gold are highlighted in amber.
 
 ### 7. Player Intel
 Hover rows with things the game's own overlay never shows. Sub-toggles:
-- **Embargo & Doomsday Badges** — who embargoes whom (either direction), plus
-  doomsday-clock / decaying status.
+- **Embargo Badges** — who embargoes whom, either direction.
+- **Doomsday Badges** — doomsday-clock / decaying status.
+- **Team Totals** — team games: their team's finished structures and measured
+  income, summed across every teammate.
 - **Launcher Readiness %** — share of their SAM and silo tubes actually ready
   to fire right now, reloads counted as not ready.
 
@@ -87,14 +89,16 @@ second and per minute.
 Adds rows to the player-info overlay (shown when you hover a player):
 - **Troop Rate (Others)** — their natural troop growth per second/minute,
   straight from the game's own formula (same figure as your Troop Rate panel).
-- **Gold Income (Others)** — their gold income per second/minute, measured from
-  their gold changes over the last 60 s (same model as your Gold Income panel),
+- **Gold Income (Others)** — their gold income per second/minute, from the
+  game's cumulative counters over the last 60 s (same figure as the
+  leaderboard),
   with a base/ports/warships/factories breakdown estimated from detected
   payouts to that player.
 
 ### 10. Gold Income Display
 A draggable panel showing your gold income **per second** and/or **per minute**
-(position is remembered). The total is measured from your actual gold, then split
+(position is remembered). The total comes from the game's cumulative income
+counters (same figure as the leaderboard's Gold Income column), then split
 into:
 - **base** — the passive rate,
 - **ports** — trade-ship arrivals,
@@ -155,6 +159,8 @@ Not packaged yet — requires Apple's Xcode converter and Developer account (see
 ## Notes
 
 - Settings are stored locally and persist between games.
+- One-click profiles (Defense, Economy, Intel, Minimal, All) set curated
+  toggle sets; touching any switch returns to a custom setup.
 - The extension only runs on `https://openfront.io` — embedded hosts such as
   CrazyGames aren't covered.
 - This extension is **unofficial** and is not affiliated with or endorsed by
