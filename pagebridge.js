@@ -4047,15 +4047,9 @@
   function tryReadDirectIncome(game, me) {
     if (game && me) {
       const cfg = callMethod(game, "config") ?? readProperty(game, "config") ?? null;
-      const rate = toFiniteNumber(callMethod(cfg, "goldAdditionRate", me), null);
+      const rate = cfg ? getGoldAdditionRate(cfg, me) : null;
       if (rate !== null && rate > 0) {
         return { perSec: rate * TICKS_PER_SECOND, perMin: rate * TICKS_PER_SECOND * 60 };
-      }
-      const mult = toFiniteNumber(callMethod(cfg, "goldMultiplier"), null);
-      if (mult !== null && mult > 0) {
-        const base = getPlayerType(me) === "BOT" ? BOT_GOLD_PER_TICK : BASE_GOLD_PER_TICK;
-        const v = base * mult;
-        return { perSec: v * TICKS_PER_SECOND, perMin: v * TICKS_PER_SECOND * 60 };
       }
     }
     // Try player-level income properties (fallback for minified client builds)
@@ -4084,6 +4078,48 @@
 
   function gameConfig(game) {
     return game ? (callMethod(game, "config") ?? readProperty(game, "config") ?? null) : null;
+  }
+
+  // v0.35 moved the gold economy methods off the shared Config (the only
+  // config the client view gets) into the server-only EngineConfig. These
+  // mirror the same formulas from the lobby config so income attribution
+  // keeps working there; older builds keep using the direct methods.
+  function getGoldMultiplierFor(cfg, player) {
+    const gc = callMethod(cfg, "gameConfig") ?? readProperty(cfg, "gameConfig") ?? null;
+    const cheats = readProperty(gc, "hostCheats") ?? readProperty(gc, "cheats");
+    const cheatMult = toFiniteNumber(readProperty(cheats, "goldMultiplier"), null);
+    if (cheatMult !== null && cheatMult > 0 && callMethod(player, "isLobbyCreator") === true) {
+      return cheatMult;
+    }
+    const direct = toFiniteNumber(callMethod(cfg, "goldMultiplier"), null);
+    if (direct !== null && direct > 0) return direct;
+    const mult = toFiniteNumber(readProperty(gc, "goldMultiplier"), null);
+    return mult !== null && mult > 0 ? mult : 1;
+  }
+
+  function getGoldAdditionRate(cfg, player) {
+    const direct = toFiniteNumber(callMethod(cfg, "goldAdditionRate", player), null);
+    if (direct !== null && direct >= 0) return direct;
+    const base = getPlayerType(player) === "BOT" ? BOT_GOLD_PER_TICK : BASE_GOLD_PER_TICK;
+    return base * getGoldMultiplierFor(cfg, player);
+  }
+
+  function getTradeShipGold(cfg, dist, player) {
+    const direct = toFiniteNumber(callMethod(cfg, "tradeShipGold", dist, player), null);
+    if (direct !== null && direct > 0) return direct;
+    const d = toFiniteNumber(dist, 0);
+    const baseGold = 75_000 / (1 + Math.exp(-0.03 * (d - 300))) + 50 * d;
+    return Math.floor(baseGold * getGoldMultiplierFor(cfg, player));
+  }
+
+  function getTrainGold(cfg, rel, citiesVisited, player) {
+    const direct = toFiniteNumber(callMethod(cfg, "trainGold", rel, citiesVisited, player), null);
+    if (direct !== null && direct > 0) return direct;
+    const visits = Math.max(0, toFiniteNumber(citiesVisited, 0) - 9);
+    let baseGold = 25_000;
+    if (rel === "ally") baseGold = 35_000;
+    else if (rel === "self") baseGold = 10_000;
+    return Math.floor(Math.max(5000, baseGold - visits * 5_000) * getGoldMultiplierFor(cfg, player));
   }
 
   function tileDistance(game, a, b) {
@@ -4350,7 +4386,7 @@
             const straight = tileDistance(game, t.firstTile, dstTile);
             if (straight !== null && straight > dist) dist = straight;
           }
-          const gold = toFiniteNumber(callMethod(cfg, "tradeShipGold", dist, t.owner || me), 0);
+          const gold = getTradeShipGold(cfg, dist, t.owner || me);
           if (gold > 0) {
             const bucket = captured ? "warships" : "ports";
             const recipients = (captured || returnedHome)
@@ -4425,7 +4461,7 @@
             // Engine payout rules (TrainStation.onStop): the TRAIN owner is
             // always paid, and a DIFFERENT station owner is paid the same
             // full amount — both valued with the train owner's multiplier.
-            const gold = toFiniteNumber(callMethod(cfg, "trainGold", rel, stops, e.t.owner), 0);
+            const gold = getTrainGold(cfg, rel, stops, e.t.owner);
             if (gold > 0) {
               const recipients = same
                 ? [e.t.owner]
@@ -4464,7 +4500,7 @@
       const trainAvail = updateTrainEvents(game, me, cfg);
       if (!shipAvail || !trainAvail) { cachedSourceSplit = null; return null; }
       pruneIncomeEvents();
-      const base = cfg ? toFiniteNumber(callMethod(cfg, "goldAdditionRate", me), null) : null;
+      const base = cfg ? getGoldAdditionRate(cfg, me) : null;
       const basePerSec = base !== null && base > 0 ? base * TICKS_PER_SECOND : 0;
       const portsPerSec     = eventRate(shipIncomeEvents);
       const warshipsPerSec  = eventRate(warshipIncomeEvents);
@@ -5375,6 +5411,6 @@
 
   window.addEventListener("pagehide", stopAllFeatures, { once: true });
 
-  const BRIDGE_VERSION = "v5.0";
+  const BRIDGE_VERSION = "v5.1";
   window.postMessage({ source: PAGE_SOURCE, type: "READY", payload: { version: BRIDGE_VERSION } }, "*");
 })();

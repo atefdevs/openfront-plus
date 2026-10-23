@@ -548,6 +548,12 @@
         "New hover row: Team Totals — team games show the hovered player's team structures and income, summed.",
       ],
     },
+    {
+      version: "5.1",
+      notes: [
+        "Trade partner income and the passive base share of Gold Income keep working after the latest game update.",
+      ],
+    },
   ];
 
   function parseVersion(value) {
