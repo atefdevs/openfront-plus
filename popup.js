@@ -554,6 +554,15 @@
         "Trade partner income and the passive base share of Gold Income keep working after the latest game update.",
       ],
     },
+    {
+      version: "5.2",
+      notes: [
+        "Replays and spectator games no longer show stuck panels — the overlay quietly switches off when there's no player to watch.",
+        "Fixed a case where the intel overlay stayed dark unless another toggle besides Doomsday Clock or Team Totals was on.",
+        "Overlays stay live across browser Back/Forward navigation instead of going quiet until a full reload.",
+        "Reinforced income and SAM math against the latest game update.",
+      ],
+    },
   ];
 
   function parseVersion(value) {

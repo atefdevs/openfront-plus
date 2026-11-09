@@ -840,7 +840,8 @@
       if (!nav.points) {
         const traj = readProperty(ns, "trajectory");
         if (Array.isArray(traj) && traj.length > 0) {
-          nav.points = traj.map(t => readProperty(t, "tile"));
+          // v0.36 stores trajectory points as raw Numeric TileRefs; older builds used { tile } objects.
+          nav.points = traj.map(t => (typeof t === "number" ? t : readProperty(t, "tile")));
           const first = traj[0];
           const firstTile = readProperty(first, "tile");
           nav.launchTile = firstTile !== undefined && firstTile !== null
@@ -1445,6 +1446,10 @@
     if (!isGameSettled(game)) return false;
     if (!hasKnownGameSurface()) return false;
     if (isSpawnPhase(game)) return false;
+    // A replay or spectator game has no local player: "you" rows and panels
+    // would be stuck on placeholder text. Silence the bridge entirely.
+    const cfg = callMethod(game, "config") ?? readProperty(game, "config") ?? null;
+    if (callMethod(cfg, "isReplay") === true || callMethod(cfg, "isIntentionalSpectator") === true) return false;
     const ticks = toFiniteNumber(callMethod(game, "ticks"), 0);
     return ticks > 0;
   }
@@ -4646,8 +4651,10 @@
       clearGoldIncomeDisplay();
       return;
     }
-    maybeSampleGold(game);
+    // No local player (replay/spectate): there is nobody to measure, so keep the panel hidden.
     const me = getMyPlayer(game);
+    if (!me) { clearGoldIncomeDisplay(); return; }
+    maybeSampleGold(game);
     const rates = computeGoldRates(game) ?? (me ? tryReadDirectIncome(game, me) : null);
     const lines = [];
     if (rates) {
@@ -4926,8 +4933,11 @@
       clearTroopRateDisplay();
       return;
     }
+    // No local player (replay/spectate): there is nobody to measure, so keep the panel hidden.
+    const me = getMyPlayer(game);
+    if (!me) { clearTroopRateDisplay(); return; }
     maybeSampleTroops(game);
-    const rates = computeTroopRates(game, getMyPlayer(game));
+    const rates = computeTroopRates(game, me);
     const lines = [];
     if (rates) {
       if (settings.troopPerSecond) lines.push(`+${formatTroops(rates.perSec)}/s`);
@@ -5201,7 +5211,7 @@
     return settings.samCoverage || settings.nukeGrouper || settings.teammateMarkers ||
       settings.incomingNukeAlert || settings.globalNukeActivity || settings.personalNukeTracker ||
       settings.enemyNukeReadiness ||
-      settings.intelDiplomacy || settings.intelReadinessPct || settings.intelTargets ||
+      settings.intelDiplomacy || settings.intelDoomsday || settings.intelReadinessPct || settings.intelTargets || settings.intelTeamTotals ||
       settings.tradeIncome || settings.tradeCaptures || settings.tradeTransports || settings.tradeWarships ||
       settings.overlayTroopRate || settings.overlayGoldIncome ||
       settings.buildProgress ||
@@ -5215,6 +5225,11 @@
     clearNukeEntries();
     document.getElementById(NUKE_LAYER_ID)?.remove();
     clearTeammateEntries();
+    // Drop per-match notepad state: a same-page game transition must never
+    // inherit death-event or blast-zone answers from the previous match.
+    deathEventsByTick.clear();
+    lastDeathDrainTick = -1;
+    blastTouchCache.clear();
     if (alertPanelVisible) clearAlertPanel();
     if (globalActivityPanelVisible) clearGlobalActivityPanel();
     teardownEnemyNukesHover();
@@ -5362,10 +5377,18 @@
     setGlobalNukeActivityEnabled(false);
     setPersonalNukeTrackerEnabled(false);
     setEnemyNukeReadinessEnabled(false);
+    setIntelDiplomacyEnabled(false);
+    setIntelDoomsdayEnabled(false);
+    setIntelReadinessPctEnabled(false);
+    setIntelTargetsEnabled(false);
+    setIntelTeamTotalsEnabled(false);
     setTradeIncomeEnabled(false);
     setTradeCapturesEnabled(false);
     setTradeTransportsEnabled(false);
     setTradeWarshipsEnabled(false);
+    setOverlayTroopRateEnabled(false);
+    setOverlayGoldIncomeEnabled(false);
+    setBuildProgressEnabled(false);
     settings.goldPerSecond = false;
     settings.goldPerMinute = false;
     settings.troopPerSecond = false;
@@ -5409,8 +5432,15 @@
     } catch (_) {}
   });
 
-  window.addEventListener("pagehide", stopAllFeatures, { once: true });
+  // Only tear down when the page is really leaving. A back/forward-cache
+  // restore thaws a frozen page with its rAF chain intact — tearing down
+  // there would leave the bridge dark on return. Keep the handler around
+  // for repeated pagehide events from multiple freeze/thaw cycles.
+  window.addEventListener("pagehide", (event) => {
+    if (event.persisted) return;
+    stopAllFeatures();
+  });
 
-  const BRIDGE_VERSION = "v5.1";
+  const BRIDGE_VERSION = "v5.2";
   window.postMessage({ source: PAGE_SOURCE, type: "READY", payload: { version: BRIDGE_VERSION } }, "*");
 })();
