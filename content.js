@@ -28,6 +28,8 @@
     overlayTroopRate: true,
     overlayGoldIncome: true,
     buildProgress: true,
+    samReadinessLabels: true,
+    siloReadinessLabels: true,
     goldPerSecond: true,
     goldPerMinute: true,
     troopPerSecond: false,

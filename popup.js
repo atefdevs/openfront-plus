@@ -27,6 +27,8 @@
     overlayTroopRate: true,
     overlayGoldIncome: true,
     buildProgress: true,
+    samReadinessLabels: true,
+    siloReadinessLabels: true,
     goldPerSecond: true,
     goldPerMinute: true,
     troopPerSecond: false,
@@ -51,13 +53,14 @@
     { name: "playerStats", master: "playerStatsOverlay", subs: ["overlayTroopRate", "overlayGoldIncome"] },
     { name: "goldIncome", master: "goldIncome", subs: ["goldPerSecond", "goldPerMinute"] },
     { name: "troopRate", master: "troopRate", subs: ["troopPerSecond", "troopPerMinute"] },
+    { name: "launcherReadiness", master: "launcherReadiness", subs: ["samReadinessLabels", "siloReadinessLabels"] },
   ];
 
   /* Sections for grouping + per-section on-counts. */
   const SECTIONS = {
     nukes: ["samCoverage", "nukeGrouper", "incomingNukeAlert", "globalNukeActivity", "personalNukeTracker", "enemyNukeReadiness"],
     economy: ["tradeIncome", "tradeCaptures", "tradeTransports", "tradeWarships", "overlayTroopRate", "overlayGoldIncome", "goldPerSecond", "goldPerMinute", "troopPerSecond", "troopPerMinute", "intelDiplomacy", "intelDoomsday", "intelReadinessPct", "intelTargets", "intelTeamTotals"],
-    map: ["teammateMarkers", "buildProgress"],
+    map: ["teammateMarkers", "buildProgress", "samReadinessLabels", "siloReadinessLabels"],
   };
 
   /* Persisted UI state (which groups/sections are expanded). Defaults open. */
@@ -561,6 +564,12 @@
         "Fixed a case where the intel overlay stayed dark unless another toggle besides Doomsday Clock or Team Totals was on.",
         "Overlays stay live across browser Back/Forward navigation instead of going quiet until a full reload.",
         "Reinforced income and SAM math against the latest game update.",
+      ],
+    },
+    {
+      version: "5.3",
+      notes: [
+        "New: Launcher Readiness Labels — live reload progress under your SAM launchers and missile silos, Cooldown percentage plus seconds until the next tube is ready. Auto-hides at full readiness and zooms out with the map.",
       ],
     },
   ];

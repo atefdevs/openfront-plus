@@ -32,6 +32,8 @@
   const GOLD_INCOME_HOVER_ID = "of-nuke-tools-gold-income-hover";
   const BUILD_LAYER_ID = "of-nuke-tools-build-layer";
   const BUILD_STYLE_ID = "of-nuke-tools-build-style";
+  const LAUNCHER_LAYER_ID = "of-nuke-tools-launcher-layer";
+  const LAUNCHER_STYLE_ID = "of-nuke-tools-launcher-style";
   const LINUX_EMOJI_STYLE_ID = "of-nuke-tools-linux-emoji";
   // Nuke costs from Config. Atom is flat 750k, Hydrogen 5M; a MIRV carrier is
   // 25M + 15M per MIRV already launched this game. The live MIRV price is read
@@ -148,6 +150,8 @@
     overlayTroopRate: false,
     overlayGoldIncome: false,
     buildProgress: false,
+    samReadinessLabels: false,
+    siloReadinessLabels: false,
     goldPerSecond: false,
     goldPerMinute: false,
     troopPerSecond: false,
@@ -253,7 +257,7 @@
       #${TEAMMATE_LAYER_ID},
       #${ALERT_PANEL_ID}, #${ALERT_PANEL_ID} .of-nuke-tools-alert-row,
       #${GLOBAL_ACTIVITY_PANEL_ID},
-      #${BUILD_LAYER_ID},
+      #${BUILD_LAYER_ID}, #${LAUNCHER_LAYER_ID},
       .of-nuke-tools-hover-card {
         font-family: system-ui, sans-serif, "Noto Color Emoji", "Noto Emoji", "DejaVu Sans", "Symbola" !important;
       }
@@ -5182,6 +5186,194 @@
     }
   }
 
+  // === Launcher readiness labels (SAM launchers & silos mid-reload) ===
+  // Same visual family as Build Progress Labels — percent progress plus
+  // seconds — but drawn only while at least one tube is reloading and
+  // invisible again at 100% ready. Under-construction launchers are skipped
+  // (Build Progress owns those).
+  const LAUNCHER_TYPES = ["SAM Launcher", "Missile Silo"];
+  const LAUNCHER_SCAN_MS = BUILD_SCAN_MS;
+  let launcherScanCache = [];
+  let lastLauncherScanAt = 0;
+  let launcherLayerGame = null;
+  const launcherEntries = new Map();
+
+  function ensureLauncherStyle() {
+    appendStyle(LAUNCHER_STYLE_ID, `
+      #${LAUNCHER_LAYER_ID} { position: fixed; inset: 0; z-index: 31; pointer-events: none; }
+      #${LAUNCHER_LAYER_ID} .of-lr-label {
+        position: fixed; left: 0; top: 0;
+        transform: translate3d(var(--lr-x), var(--lr-y), 0) translateX(-50%);
+        will-change: transform;
+      }
+      #${LAUNCHER_LAYER_ID} .of-lr-inner {
+        display: flex; flex-direction: column; align-items: center; gap: 1px;
+        padding: 2px 6px; border-radius: 6px;
+        background: rgba(7,12,18,0.85); border: 1px solid rgba(251,146,60,0.35);
+        font: 700 10px/1.15 system-ui, sans-serif; color: #e2e8f0;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.9); white-space: nowrap;
+      }
+      #${LAUNCHER_LAYER_ID} .of-lr-pct { font-weight: 900; font-size: 11px; color: #fb923c; }
+      #${LAUNCHER_LAYER_ID} .of-lr-sec { font-size: 9px; color: #cbd5e1; }
+    `);
+  }
+
+  function ensureLauncherLayer() {
+    ensureLauncherStyle();
+    let l = document.getElementById(LAUNCHER_LAYER_ID);
+    if (!l) {
+      l = document.createElement("div");
+      l.id = LAUNCHER_LAYER_ID;
+      l.setAttribute("aria-hidden", "true");
+      (document.body || document.documentElement).appendChild(l);
+    }
+    return l;
+  }
+
+  function clearLauncherEntries() {
+    document.getElementById(LAUNCHER_LAYER_ID)?.replaceChildren();
+    launcherEntries.clear();
+    launcherScanCache = [];
+  }
+
+  function pruneLauncherEntries() {
+    const active = new Set(launcherScanCache.map(i => i.id));
+    for (const [id, entry] of launcherEntries) {
+      if (!active.has(id)) { entry.label.remove(); launcherEntries.delete(id); }
+    }
+  }
+
+  function collectReloadingLaunchers(game, tick) {
+    const out = [];
+    const nowTicks = Number.isFinite(tick) ? tick : toFiniteNumber(callMethod(game, "ticks"));
+    if (!Number.isFinite(nowTicks)) return out;
+    for (const type of LAUNCHER_TYPES) {
+      const key = type === "SAM Launcher" ? "samReadinessLabels" : "siloReadinessLabels";
+      if (!settings[key]) continue;
+      const res = getGameUnitsCached(game, type);
+      if (!res.available) continue;
+      const cooldown = type === "SAM Launcher" ? getSamCooldownTicks(game) : getSiloCooldownTicks(game);
+      for (const u of res.units) {
+        if (callMethod(u, "isUnderConstruction") === true) continue;
+        const level = getUnitLevel(u);
+        if (!(level >= 1)) continue;
+        const queue = getMissileTimerQueue(u);
+        const busy = countBusyTubes(game, queue, cooldown);
+        const ready = Math.max(0, level - busy);
+        if (ready >= level) continue; // 100% ready — no label
+        let minRemaining = null;
+        for (const launched of queue) {
+          if (!Number.isFinite(launched)) continue;
+          const remaining = cooldown - (nowTicks - launched);
+          if (remaining <= 0) continue;
+          if (minRemaining === null || remaining < minRemaining) minRemaining = remaining;
+        }
+        const tile = getUnitTile(u);
+        if (tile === null) continue;
+        const world = tileToWorld(game, tile);
+        if (!world) continue;
+        out.push({
+          id: `${type === "SAM Launcher" ? "SAM" : "SILO"}:${String(toFiniteNumber(callMethod(u, "id"), getUnitId(u)))}`,
+          world,
+          pct: Math.max(0, Math.min(99, Math.floor((ready / level) * 100))),
+          sec: minRemaining === null ? 0 : Math.max(0, Math.ceil(minRemaining / TICKS_PER_SECOND)),
+        });
+      }
+    }
+    return out;
+  }
+
+  function syncLauncherReadiness() {
+    if (!settings.samReadinessLabels && !settings.siloReadinessLabels) {
+      clearLauncherEntries();
+      document.getElementById(LAUNCHER_LAYER_ID)?.remove();
+      document.getElementById(LAUNCHER_STYLE_ID)?.remove();
+      return;
+    }
+    const ctx = getGameContext();
+    if (!ctx?.game || !ctx?.transform || !isGameActive(ctx.game)) {
+      clearLauncherEntries();
+      return;
+    }
+    const tScale = Number.isFinite(ctx.transform.scale) ? ctx.transform.scale : 1.8;
+    if (!(tScale > BUILD_LABEL_MIN_ZOOM)) {
+      // Zoomed past the game's dot LOD — no structure icons to anchor to.
+      clearLauncherEntries();
+      return;
+    }
+    if (launcherLayerGame !== ctx.game) {
+      launcherLayerGame = ctx.game;
+      clearLauncherEntries();
+    }
+    const now = performance.now();
+    const tick = getGameTick(ctx.game);
+    if (!Number.isFinite(tick)) return;
+    if (now - lastLauncherScanAt >= LAUNCHER_SCAN_MS) {
+      lastLauncherScanAt = now;
+      launcherScanCache = collectReloadingLaunchers(ctx.game, tick);
+      pruneLauncherEntries();
+    }
+    const layer = ensureLauncherLayer();
+    const yOffset = 32;
+    for (const item of launcherScanCache) {
+      const screen = worldToScreen(ctx.transform, item.world);
+      const visible = Number.isFinite(screen?.x) && Number.isFinite(screen?.y) &&
+        screen.x >= -40 && screen.y >= -40 &&
+        screen.x <= window.innerWidth + 40 && screen.y <= window.innerHeight + 40;
+      let e = launcherEntries.get(item.id);
+      if (!visible) {
+        if (e && !e.hidden) { e.label.hidden = true; e.hidden = true; }
+        continue;
+      }
+      if (!e) {
+        const label = document.createElement("div");
+        label.className = "of-lr-label";
+        const inner = document.createElement("div");
+        inner.className = "of-lr-inner";
+        const pct = document.createElement("span");
+        pct.className = "of-lr-pct";
+        const sec = document.createElement("span");
+        sec.className = "of-lr-sec";
+        inner.append(pct, sec);
+        label.append(inner);
+        layer.appendChild(label);
+        e = { label, pct, sec, text: "", hidden: false, x: NaN, y: NaN };
+        launcherEntries.set(item.id, e);
+      }
+      if (e.hidden) { e.label.hidden = false; e.hidden = false; }
+      const sx = Math.round(screen.x);
+      const sy = Math.round(screen.y + yOffset);
+      if (e.x !== sx) { e.label.style.setProperty("--lr-x", `${sx}px`); e.x = sx; }
+      if (e.y !== sy) { e.label.style.setProperty("--lr-y", `${sy}px`); e.y = sy; }
+      const txt = `${item.pct}|${item.sec}`;
+      if (e.text !== txt) {
+        e.pct.textContent = `Cooldown: ${item.pct}%`;
+        e.sec.textContent = `${item.sec}s`;
+        e.text = txt;
+      }
+    }
+  }
+
+  function setSamReadinessLabelsEnabled(on) {
+    settings.samReadinessLabels = !!on;
+    if (!settings.samReadinessLabels && !settings.siloReadinessLabels) {
+      clearLauncherEntries();
+      document.getElementById(LAUNCHER_LAYER_ID)?.remove();
+      document.getElementById(LAUNCHER_STYLE_ID)?.remove();
+    }
+    ensureMasterLoop();
+  }
+
+  function setSiloReadinessLabelsEnabled(on) {
+    settings.siloReadinessLabels = !!on;
+    if (!settings.siloReadinessLabels && !settings.samReadinessLabels) {
+      clearLauncherEntries();
+      document.getElementById(LAUNCHER_LAYER_ID)?.remove();
+      document.getElementById(LAUNCHER_STYLE_ID)?.remove();
+    }
+    ensureMasterLoop();
+  }
+
   function setBuildProgressEnabled(on) {
     settings.buildProgress = !!on;
     if (!on) {
@@ -5214,7 +5406,7 @@
       settings.intelDiplomacy || settings.intelDoomsday || settings.intelReadinessPct || settings.intelTargets || settings.intelTeamTotals ||
       settings.tradeIncome || settings.tradeCaptures || settings.tradeTransports || settings.tradeWarships ||
       settings.overlayTroopRate || settings.overlayGoldIncome ||
-      settings.buildProgress ||
+      settings.buildProgress || settings.samReadinessLabels || settings.siloReadinessLabels ||
       settings.goldPerSecond || settings.goldPerMinute || settings.troopPerSecond || settings.troopPerMinute;
   }
 
@@ -5239,6 +5431,7 @@
     otherGoldTrackers.clear();
     otherSplitEvents.clear();
     clearBuildEntries();
+    clearLauncherEntries();
     if (goldIncomePanelVisible) clearGoldIncomeDisplay();
     if (troopRatePanelVisible) clearTroopRateDisplay();
   }
@@ -5303,6 +5496,7 @@
       if (settings.goldPerSecond || settings.goldPerMinute) syncGoldIncome();
       if (settings.troopPerSecond || settings.troopPerMinute) syncTroopRate();
       if (settings.buildProgress) syncBuildProgress();
+      if (settings.samReadinessLabels || settings.siloReadinessLabels) syncLauncherReadiness();
     } catch (e) {
       reportToPopup("feature error: " + (e?.message ?? String(e)));
       try { console.error("[Openfront+] master loop error:", e); } catch (_) {}
@@ -5355,6 +5549,8 @@
     setOverlayTroopRateEnabled(Boolean(src.overlayTroopRate));
     setOverlayGoldIncomeEnabled(Boolean(src.overlayGoldIncome));
     setBuildProgressEnabled(Boolean(src.buildProgress));
+    setSamReadinessLabelsEnabled(Boolean(src.samReadinessLabels));
+    setSiloReadinessLabelsEnabled(Boolean(src.siloReadinessLabels));
 
     const oldGoldActive = settings.goldPerSecond || settings.goldPerMinute;
     settings.goldPerSecond = Boolean(src.goldPerSecond);
@@ -5389,6 +5585,8 @@
     setOverlayTroopRateEnabled(false);
     setOverlayGoldIncomeEnabled(false);
     setBuildProgressEnabled(false);
+    setSamReadinessLabelsEnabled(false);
+    setSiloReadinessLabelsEnabled(false);
     settings.goldPerSecond = false;
     settings.goldPerMinute = false;
     settings.troopPerSecond = false;
@@ -5441,6 +5639,6 @@
     stopAllFeatures();
   });
 
-  const BRIDGE_VERSION = "v5.2";
+  const BRIDGE_VERSION = "v5.3";
   window.postMessage({ source: PAGE_SOURCE, type: "READY", payload: { version: BRIDGE_VERSION } }, "*");
 })();

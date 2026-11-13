@@ -472,6 +472,49 @@
               </span>
             </label>
 
+            <div class="toggle-card toggle-card--collapsible" data-group="launcherReadiness" id="launcherReadinessCard">
+              <div class="toggle-card-header">
+                <button type="button" class="group-expander open" aria-expanded="true" aria-controls="launcherReadinessSubs">
+                  <span class="copy">
+                    <span class="title-row">
+                      <strong>Launcher Readiness Labels</strong>
+                      <span class="badge badge--blue">🚀 Reload</span>
+                    </span>
+                    <small>Percentage + seconds until the next tube is ready — shown under SAM launchers and missile silos while they're reloading. Auto-hides at full readiness and zooms out with the map.</small>
+                  </span>
+                  <span class="collapse-arrow" id="launcherReadinessArrow" aria-hidden="true">▶</span>
+                </button>
+                <label class="switch">
+                  <input id="launcherReadiness" type="checkbox" />
+                  <span class="track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <div class="sub-toggles open" id="launcherReadinessSubs">
+                <div class="sub-stack">
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>SAM Readiness Labels</strong></span>
+                      <small>Live reload progress on SAM launchers while tubes re-arm.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="samReadinessLabels" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-card toggle-card--sub">
+                    <span class="copy">
+                      <span class="title-row"><strong>Silo Readiness Labels</strong></span>
+                      <small>Live reload progress on missile silos while missiles re-arm.</small>
+                    </span>
+                    <span class="switch">
+                      <input id="siloReadinessLabels" type="checkbox" />
+                      <span class="track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
       </section>

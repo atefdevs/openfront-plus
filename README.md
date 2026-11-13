@@ -121,6 +121,16 @@ missile silo, SAM launcher), a small label appears under its build bar showing
 the percentage complete and the remaining build time in seconds. Durations come
 from the game's own config, so they match the server exactly.
 
+### 13. Launcher Readiness Labels
+While a SAM launcher or missile silo is reloading (not ready), a small label
+appears under it showing the reload percentage and the seconds until the next
+missile or tube is ready (e.g. `Cooldown 67%` with `5s` under it — the same
+shape as the Build Progress Label, but for cooldown instead of construction).
+The label auto-hides at full readiness, hides entirely when zoomed out past the
+game's icon level, and is skipped for launchers under construction (Build
+Progress owns those). Sub-toggles let you opt out of SAM or silo labels
+independently; enabled by default.
+
 ## What it doesn't do
 
 No auto-join, boat macros, economy cheats, alliance panels, bot markers,
